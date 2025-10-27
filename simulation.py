@@ -144,7 +144,7 @@ def NARMA_n(T, n): # NARMA_n
 #     u = np.sin(t) * 10000
 #     return u
 
-N = 20 # number of nodes
+N = 5 # number of nodes
 size = 10
 
 ids = np.arange(1, N + 1)
@@ -269,8 +269,11 @@ print(f"Test NMSE:  {test_nmse:.6f}")
 
 # %% sample result
 %matplotlib inline
-plt.plot(y[6000:6500])
-plt.plot(lr.predict(scaler.transform(X))[6000:6500])
+plt.plot(y[6000:6500], label="goal output")
+plt.plot(lr.predict(scaler.transform(X))[6000:6500], label="lr output")
+plt.xlabel("iteration")
+plt.ylabel("output")
+plt.legend()
 plt.show()
 
 #%% whole result
@@ -342,4 +345,9 @@ plt.show()
 from IPython.display import HTML
 HTML(ani.to_jshtml())
 
+# %%
+
+from matplotlib.animation import PillowWriter
+ani_200 = FuncAnimation(fig, update, frames=range(200), blit=True)
+ani_200.save("animation.gif", writer='pillow', fps=10)
 # %%
