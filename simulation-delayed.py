@@ -148,7 +148,7 @@ def NARMA_n(T, n): # NARMA_n
 #     u = np.sin(t) * 10000
 #     return u
 
-N = 15 # number of nodes
+N = 8 # number of nodes
 size = 10
 
 ids = np.arange(1, N + 1)
@@ -194,7 +194,7 @@ for i, id in enumerate(ids):
 # %% NUMERICAL INTEGRATION
 
 iterations = 100000
-delay = 5 # number of iterations - 2 * dt = 0.02 seconds 
+delay = 10 # number of iterations - 2 * dt = 0.02 seconds 
 
 x_coords = [[] for _ in range(N)]
 z_coords = [[] for _ in range(N)]
