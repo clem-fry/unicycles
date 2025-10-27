@@ -119,13 +119,12 @@ def u(t): # input signal
     f1 = 2.11 # frequencies
     f2 = 3.73
     f3 = 4.33
-    T = 1
     u = 0.2 * np.sin(2*np.pi * f1 * t / T) * np.sin(2*np.pi * f2 * t / T) * np.sin(2*np.pi * f3 * t / T)
     return u
 
-def NARAM_2(T): # NARMA_2
+def NARAM_2(time): # NARMA_2
     y_array = [0, 0]
-    for t in range(1, T):
+    for t in range(1, time):
         y = 0.4 * y_array[t] + 0.4 * y_array[t] * y_array[t-1] + 0.6 * u(t) ** 3 + 0.1
         y_array.append(y)
     return y_array
@@ -149,7 +148,7 @@ def NARMA_n(T, n): # NARMA_n
 #     u = np.sin(t) * 10000
 #     return u
 
-N = 10 # number of nodes
+N = 15 # number of nodes
 size = 10
 
 ids = np.arange(1, N + 1)
@@ -183,7 +182,7 @@ for i, id in enumerate(ids):
 
     node = Node(id = id, x = x_array[i], z=z_array[i], 
                 theta=theta_array[i], s=0, w=0, 
-                J = 5, beta = random_number, zeta = random_number, 
+                J = 5, beta = random_number*10, zeta = random_number, 
                 T_theta = 0, T_s = 200*random_number, m = 2)
     
     if anchors[i]:
@@ -191,10 +190,11 @@ for i, id in enumerate(ids):
 
     Node.all_nodes.append(node)
 
+# 200*random_number
 # %% NUMERICAL INTEGRATION
 
 iterations = 100000
-delay = 10 # number of iterations - 2 * dt = 0.02 seconds 
+delay = 5 # number of iterations - 2 * dt = 0.02 seconds 
 
 x_coords = [[] for _ in range(N)]
 z_coords = [[] for _ in range(N)]
@@ -220,6 +220,8 @@ plt.ylabel("displacement")
 plt.show()
 
 #%% DATA SETS
+
+T = 1
 
 data = np.stack([x_coords, z_coords, theta_coords, s_array, w_array])
 data_states = data.reshape(-1, data.shape[2]).T
@@ -247,21 +249,21 @@ print("The dimension of y_test is {}".format(len(y_test)))
 
 #%%
 scaler = StandardScaler() # weight all state elements the same
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+X_train_transformed = scaler.fit_transform(X_train)
+X_test_transformed = scaler.transform(X_test)
 
 lr = LinearRegression()
-#lr = Ridge(alpha=1e-6)
+lr = Ridge(alpha=1e-6)
 
-lr.fit(X_train, y_train)
+lr.fit(X_train_transformed, y_train)
 
-prediction_test = lr.predict(X_test)
-prediction_train = lr.predict(X_train)
+prediction_test = lr.predict(X_test_transformed)
+prediction_train = lr.predict(X_train_transformed)
 
 actual = y_test
 
-train_score_lr = lr.score(X_train, y_train)
-test_score_lr = lr.score(X_test, y_test)
+train_score_lr = lr.score(X_train_transformed, y_train)
+test_score_lr = lr.score(X_test_transformed, y_test)
 
 #%%
 print("The train score for lr model is {}".format(train_score_lr))
@@ -296,6 +298,7 @@ plt.legend()
 plt.show()
 
 #%%
+%matplotlib inline
 plt.plot(y_test[-100:], label="goal output")
 plt.plot(prediction_test[-100:], label="lr output")
 plt.xlabel("iteration")
@@ -304,6 +307,8 @@ plt.legend()
 plt.show()
 
 #%%
+%matplotlib inline
+
 plt.plot(y_test[:100], label="goal output")
 plt.plot(prediction_test[:100], label="lr output")
 plt.xlabel("iteration")
