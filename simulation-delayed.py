@@ -3,6 +3,12 @@
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+import math
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge, RidgeCV, Lasso
+from sklearn.preprocessing import StandardScaler
+import pandas as pd
 
 #%% 
 
@@ -113,7 +119,7 @@ def u(t): # input signal
     f1 = 2.11 # frequencies
     f2 = 3.73
     f3 = 4.33
-    T = 100
+    T = 1
     u = 0.2 * np.sin(2*np.pi * f1 * t / T) * np.sin(2*np.pi * f2 * t / T) * np.sin(2*np.pi * f3 * t / T)
     return u
 
@@ -122,7 +128,6 @@ def NARAM_2(T): # NARMA_2
     for t in range(1, T):
         y = 0.4 * y_array[t] + 0.4 * y_array[t] * y_array[t-1] + 0.6 * u(t) ** 3 + 0.1
         y_array.append(y)
-
     return y_array
 
 def NARMA_n(T, n): # NARMA_n
@@ -146,6 +151,8 @@ def NARMA_n(T, n): # NARMA_n
 
 N = 5 # number of nodes
 size = 10
+
+delay = 2 # number of iterations - 2 * dt = 0.02 seconds 
 
 ids = np.arange(1, N + 1)
 
@@ -188,7 +195,7 @@ for i, id in enumerate(ids):
 
 # %% NUMERICAL INTEGRATION
 
-iterations = 10000
+iterations = 20000
 
 x_coords = [[] for _ in range(N)]
 z_coords = [[] for _ in range(N)]
@@ -198,28 +205,25 @@ s_array =  [[] for _ in range(N)]
 
 for iter in range(iterations):
     for n, node in enumerate(Node.all_nodes): # updates all variables - not syncronised between nodes
-        Node.update(node, iter)
-        # if (Node.dt * iter) % 1 == 0:
-        x_coords[n].append(node.x)
-        z_coords[n].append(node.z)
-        theta_coords[n].append(node.theta)
-        w_array[n].append(node.w)
-        s_array[n].append(node.s)
+        Node.update(node, iter // delay)
+        if iter % delay == 0:
+            x_coords[n].append(node.x)
+            z_coords[n].append(node.z)
+            theta_coords[n].append(node.theta)
+            w_array[n].append(node.w)
+            s_array[n].append(node.s)
 
 #%% DATA SETS
-
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.linear_model import Ridge, RidgeCV, Lasso
-from sklearn.preprocessing import StandardScaler
-import pandas as pd
 
 data = np.stack([x_coords, z_coords, theta_coords, s_array, w_array])
 data_states = data.reshape(-1, data.shape[2]).T
 
-y_array = NARAM_2(np.shape(data_states)[0]) 
+updates = int(np.shape(data_states)[0] // delay)
 
-cut = 1000
+y_array = NARAM_2(np.shape(data_states)[0])
+#y_array = np.repeat(y_array_rep, 2)
+
+cut = int(np.shape(data_states)[0] * 0.1) # cut first 10 percent
 
 X = data_states[cut:, :]
 y = np.array(y_array[cut + 1:])
