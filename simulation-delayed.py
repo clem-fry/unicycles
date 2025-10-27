@@ -149,10 +149,8 @@ def NARMA_n(T, n): # NARMA_n
 #     u = np.sin(t) * 10000
 #     return u
 
-N = 5 # number of nodes
+N = 10 # number of nodes
 size = 10
-
-delay = 2 # number of iterations - 2 * dt = 0.02 seconds 
 
 ids = np.arange(1, N + 1)
 
@@ -185,8 +183,8 @@ for i, id in enumerate(ids):
 
     node = Node(id = id, x = x_array[i], z=z_array[i], 
                 theta=theta_array[i], s=0, w=0, 
-                J = 1, beta = random_number, zeta = random_number, 
-                T_theta = 10000*random_number, T_s = 1000*random_number, m = 1)
+                J = 5, beta = random_number, zeta = random_number, 
+                T_theta = 0, T_s = 200*random_number, m = 2)
     
     if anchors[i]:
         node.anchor=True
@@ -195,7 +193,8 @@ for i, id in enumerate(ids):
 
 # %% NUMERICAL INTEGRATION
 
-iterations = 20000
+iterations = 100000
+delay = 10 # number of iterations - 2 * dt = 0.02 seconds 
 
 x_coords = [[] for _ in range(N)]
 z_coords = [[] for _ in range(N)]
@@ -212,6 +211,13 @@ for iter in range(iterations):
             theta_coords[n].append(node.theta)
             w_array[n].append(node.w)
             s_array[n].append(node.s)
+
+#%%
+%matplotlib inline
+plt.plot(np.array(x_coords).T)
+plt.xlabel("iteration")
+plt.ylabel("displacement")
+plt.show()
 
 #%% DATA SETS
 
@@ -245,7 +251,7 @@ X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)
 
 lr = LinearRegression()
-lr = Ridge(alpha=1e-6)
+#lr = Ridge(alpha=1e-6)
 
 lr.fit(X_train, y_train)
 
@@ -271,19 +277,38 @@ test_nmse  = nmse(y_test[:100], prediction_test[:100])
 print(f"Train NMSE: {train_nmse:.6f}")
 print(f"Test NMSE:  {test_nmse:.6f}")
 
-# %% sample result
+#%% whole result
 %matplotlib inline
-plt.plot(y[6000:6500], label="goal output")
-plt.plot(lr.predict(scaler.transform(X))[6000:6500], label="lr output")
+plt.plot(y_train, label="goal output")
+plt.plot(prediction_train, label="lr output")
 plt.xlabel("iteration")
 plt.ylabel("output")
 plt.legend()
 plt.show()
 
-#%% whole result
+#%% test result
 %matplotlib inline
-plt.plot(y)
-plt.plot(lr.predict(scaler.transform(X)))
+plt.plot(y_test, label="goal output")
+plt.plot(prediction_test, label="lr output")
+plt.xlabel("iteration")
+plt.ylabel("output")
+plt.legend()
+plt.show()
+
+#%%
+plt.plot(y_test[-100:], label="goal output")
+plt.plot(prediction_test[-100:], label="lr output")
+plt.xlabel("iteration")
+plt.ylabel("output")
+plt.legend()
+plt.show()
+
+#%%
+plt.plot(y_test[:100], label="goal output")
+plt.plot(prediction_test[:100], label="lr output")
+plt.xlabel("iteration")
+plt.ylabel("output")
+plt.legend()
 plt.show()
 
 #%% READOUT
@@ -312,7 +337,7 @@ quiver = ax.quiver([0]*N, [0]*N, [0]*N, [0]*N,
                    angles='xy', scale_units='xy', scale=1, color='r')
 
 ax.legend()
-arrow_length = 0.1
+arrow_length = 1
 
 # --- Init function ---
 def init():
@@ -340,7 +365,7 @@ def update(frame):
     return points + [quiver]
 
 # --- Keep the animation in a variable ---
-ani = FuncAnimation(fig, update, frames=np.shape(x_coords)[1], init_func=init,
+ani = FuncAnimation(fig, update, frames=200, init_func=init,
                     blit=False, interval=100, repeat=True)
 
 plt.show()
@@ -349,9 +374,19 @@ plt.show()
 from IPython.display import HTML
 HTML(ani.to_jshtml())
 
+#%%
+u_array = []
+for i in range(200):
+    u_array.append(u(i))
+
+%matplotlib inline
+plt.plot(u_array)
+plt.xlabel("iteration")
+plt.ylabel("input")
+plt.show()
+
 # %%
 
 from matplotlib.animation import PillowWriter
-ani_200 = FuncAnimation(fig, update, frames=range(200), blit=True)
-ani_200.save("animation.gif", writer='pillow', fps=10)
+ani.save("animation.gif", writer='pillow', fps=10)
 # %%
