@@ -11,10 +11,13 @@ import pandas as pd
 import os
 import plots
 from IPython.display import HTML
+import importlib
 importlib.reload(plots)
+from scipy.optimize import minimize
+from skopt import gp_minimize
+from skopt.space import Real, Integer
 
 #%% 
-
 class Node():
 
     N = []
@@ -124,52 +127,44 @@ class Node():
         u = 0.2 * np.sin(2*np.pi * f1 * t / Node.T) * np.sin(2*np.pi * f2 * t / Node.T) * np.sin(2*np.pi * f3 * t / Node.T)
         return u
 
-#%% SETUP
+def simulation(N, spring_stiffness, delay, input_size, J, beta, m, T = 1):
+    ids = np.arange(1, N + 1)
 
-N = 20 # number of nodes
-size = 10
+    anchors = np.zeros(N, dtype=int)
+    anchor_idx = np.random.randint(N)  # pick one random anchor
+    anchors[anchor_idx] = 1
 
-ids = np.arange(1, N + 1)
+    # locations (triangle)
+    x_array = np.random.uniform(0, 10, N)
+    z_array = np.random.uniform(0, 10, N)
 
-anchors = np.zeros(N, dtype=int)
-anchor_idx = np.random.randint(N)  # pick one random anchor
-anchors[anchor_idx] = 1
+    theta_array = np.random.uniform(0, 2*np.pi, N)
 
-# locations (triangle)
-x_array = np.random.uniform(0, size, N)
-z_array = np.random.uniform(0, size, N)
+    K = np.ones((N, N)) * spring_stiffness # spring stiffnesses
 
-theta_array = np.random.uniform(0, 2*np.pi, N)
+    X, Z = np.meshgrid(x_array, z_array)
+    A = np.sqrt((X - X.T)**2 + (Z - Z.T)**2) # starting spring lengths -> beginning
 
-K = np.ones((N, N)) # spring stiffnesses
+    np.fill_diagonal(A, 0)
+    np.fill_diagonal(K, 0)
 
-X, Z = np.meshgrid(x_array, z_array)
-A = np.sqrt((X - X.T)**2 + (Z - Z.T)**2) # starting spring lengths -> beginning
+    iterations = 100000
 
-np.fill_diagonal(A, 0)
-np.fill_diagonal(K, 0)
+    Node.N = N
+    Node.K = K
+    Node.A = A
+    Node.id_array = ids
+    Node.all_nodes = []
 
-iterations = 100000
-delay = 3 # number of iterations - 2 * dt = 0.02 seconds
+    random_inputs = random.randint(0, input_size, size = len(ids))
 
-Node.N = N
-Node.K = K
-Node.A = A
-Node.id_array = ids
-Node.all_nodes = []
-
-random_inputs = random.randint(6000, 9000, size = len(ids))
-
-#%% SIMULATION
-
-def simulation(show=False):
     Node.all_nodes = []
     for i, id in enumerate(ids):
         random_input = random_inputs[i]
         node = Node(id = id, x = x_array[i], z=z_array[i], 
                     theta=theta_array[i], s=0, w=0, 
-                    J = 1, beta = 0.909, zeta = 0.05, 
-                    T_theta = 0, T_s = random_input, m = 1)
+                    J = J, beta = beta, zeta = 0.05, 
+                    T_theta = 0, T_s = random_input, m = m)
         
         if anchors[i]:
             node.anchor=True
@@ -195,36 +190,89 @@ def simulation(show=False):
     data = np.stack([x_coords, z_coords, theta_coords, s_array, w_array])
     data_states = data.reshape(-1, data.shape[2]).T
 
-    if show:
-        ani = plots.animation(x_coords, z_coords, theta_coords)
-    else:
-        ani = None
+    y_array = NARAM_2(np.shape(data_states)[0], T)
 
-    return data_states, ani    
+    cut = int(np.shape(data_states)[0] * 0.1) # cut first 10 percent
+    X = data_states[cut:, :]
+    #y_array = np.repeat(y_array_rep, 2)
 
-#%% DATA SETS
-filename = 'node-simulation.npz'
+    y = np.array(y_array[cut + 1:])
 
-if os.path.exists(filename):
-    os.remove(filename)
-file = {}
+    #X_train, X_test, y_train, y_test = train_test_split(data_states, y_array, test_size=0.2, random_state=17)
+    split_idx = int(0.7 * X.shape[0])
+    X_train, X_test = X[:split_idx, :], X[split_idx:, :]
+    y_train, y_test = y[:split_idx], y[split_idx:]
 
-period_ratios = np.arange(1, 4.25, 0.25)
+    scaler = StandardScaler() # weight all state elements the same
+    X_train_transformed = scaler.fit_transform(X_train)
+    X_test_transformed = scaler.transform(X_test)
 
-for ratio in period_ratios:
-    print(ratio)
-    Node.T = ratio
-    data_states, _ = simulation()
-    file[f'T={ratio}'] = data_states
-    np.savez('node-simulation.npz', **file)
+    lr = LinearRegression()
+    lr = Ridge(alpha=1e-6)
 
-#%% END OF SIMULATION
-# add to jupyter notebook
+    lr.fit(X_train_transformed, y_train)
 
-data_states, ani = simulation(show = True)
-display(HTML(ani.to_jshtml()))
+    prediction_test = lr.predict(X_test_transformed)
+    def nmse(y_true, y_pred):
+        return np.mean((y_true - y_pred)**2) / np.mean((y_true - np.mean(y_true))**2)
+
+    test_nmse  = nmse(y_test[:100], prediction_test[:100])
+
+    return test_nmse
+
+def NARAM_2(time, T): # NARMA_2
+    y_array = [0, 0]
+    for t in range(1, time):
+        y = 0.4 * y_array[t] + 0.4 * y_array[t] * y_array[t-1] + 0.6 * Node.u(t) ** 3 + 0.1
+        y_array.append(y)
+    return y_array
+
 
 # %%
 
-from matplotlib.animation import PillowWriter
-ani.save("animation.gif", writer='pillow', fps=10)
+def objective(params):
+    spring_stiffness, delay, J, friction, mass, input_size = params
+
+    # Round integer-like params
+    N = 10
+    delay = int(delay)
+    input_size = int(input_size)
+
+    try:
+        cost = simulation(N, spring_stiffness, delay,
+                             input_size, J, beta=friction, m=mass)
+        if np.isnan(cost) or cost == np.inf:
+            return 1e6
+        return cost
+    except Exception:
+        return 1e6
+
+space = [
+    Real(1.0, 3.0, name='spring_stiffness'),
+    Integer(1, 5, name='delay'),
+    Real(1.0, 3.0, name='J'),
+    #Integer(10, 20, name='N'),
+    Real(0.9, 3.0, name='friction'),
+    Real(0.5, 2, name='mass'),
+    Integer(8000, 10000, name='input_size')
+]
+
+
+result = gp_minimize(
+    func=objective,          # your objective function
+    dimensions=space,        # parameter space
+    n_calls=20,              # total function evaluations
+    n_initial_points=5,      # random initial points before GP starts
+    acq_func="EI",           # acquisition function: Expected Improvement
+    random_state=42,
+    verbose = True
+)
+
+# %%
+
+print("Best score:", result.fun)
+print("Best parameters:", result.x)
+
+from skopt.plots import plot_convergence
+plot_convergence(result)
+# %%
