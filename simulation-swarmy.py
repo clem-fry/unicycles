@@ -1,17 +1,12 @@
 #%%
 import numpy as np
 from numpy import random
-import matplotlib.pyplot as plt
-import math
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.linear_model import Ridge, RidgeCV, Lasso
-from sklearn.preprocessing import StandardScaler
 import pandas as pd
 import os
 import plots
 from IPython.display import HTML
 importlib.reload(plots)
+from matplotlib.animation import PillowWriter
 
 #%% 
 
@@ -24,10 +19,9 @@ class Node():
     id_array = np.array([])
     # alternatively each robot could have a different impression of the springs ?
     #adjacency_matrix = [] # existance of connections - corresponding to id list?
-    K = [] # spring stiffness between agents i and j matrix
     A = [] # spring lengths between agents i and j matrix
     all_nodes = []
-    T = 1
+    T = 3
 
     def __init__(self, id, x, z, theta, s, w, J, beta, zeta, T_theta, T_s, m):
         self.id = id
@@ -44,6 +38,7 @@ class Node():
         self.T_theta = T_theta
         self.T_s = T_s
         self.m = m
+        self.K = random.randint(10, 30, size = len(ids)) / 20
 
         self.connections = []
         self.anchor = False
@@ -71,7 +66,7 @@ class Node():
     def Dudx(self):
         sum = 0
         for node in Node.all_nodes:
-            Kij =  Node.K[self.matrix_row, node.matrix_row]
+            Kij =  self.K[node.matrix_row]
             Aij = Node.A[self.matrix_row, node.matrix_row]
             d = self.distance_to(node)
             if d > 0:
@@ -82,14 +77,31 @@ class Node():
     def Dudz(self):
         sum = 0
         for node in Node.all_nodes:
-            Kij =  Node.K[self.matrix_row, node.matrix_row]
+            Kij =  self.K[node.matrix_row]
             Aij = Node.A[self.matrix_row, node.matrix_row]
             d = self.distance_to(node)
             if d > 0:
                 energy = Kij * (Aij - d) * (self.z - node.z) / d
                 sum += energy
         return sum
+    
+    def repulsion_force(self):
+        fx, fz = 0, 0
+        d_min = 5
+        k_rep = 1
+        for node in Node.all_nodes:
+            if node is self:
+                continue
+            dx = self.x - node.x
+            dz = self.z - node.z
+            d = np.sqrt(dx**2 + dz**2) # distance to node
 
+            if d < d_min and d > 0: # when within threshold
+                f = k_rep * (1/d**2 - 1/d_min**2)
+                fx += f * dx / d
+                fz += f * dz / d
+
+        return fx, fz
 
     def update(self, t):
         if self.anchor:
@@ -103,8 +115,11 @@ class Node():
         self.theta = self.theta + Node.dt * dtheta
         #print('theta: ',self.theta)
 
-        ds = 1/self.m * (self.Dudx() * np.cos(self.theta) + self.Dudz() * np.sin(self.theta) + self.f_s(t) - self.beta * self.s)
-        
+        #fx_rep, fz_rep = self.repulsion_force()
+        ds = 1/self.m * (self.Dudx() * np.cos(self.theta) + 
+                         self.Dudz() * np.sin(self.theta) + 
+                         self.f_s(t) - self.beta * self.s)
+    
         self.s = self.s + Node.dt * ds
         #print('Dudx: ', self.Dudx())
         #print('Dudz: ', self.Dudz())
@@ -114,8 +129,7 @@ class Node():
 
         self.x = self.x + Node.dt * (np.cos(self.theta) * self.s)
         self.z = self.z + Node.dt * (np.sin(self.theta) * self.s)
-        #print('x: ',self.x)
-        #print('z: ',self.z)
+
 
     def u(t): # input signal 
         f1 = 2.11 # frequencies
@@ -126,7 +140,7 @@ class Node():
 
 #%% SETUP
 
-N = 2 # number of nodes
+N = 20 # number of nodes: 15 to 20
 size = 10
 
 ids = np.arange(1, N + 1)
@@ -141,24 +155,20 @@ z_array = np.random.uniform(0, size, N)
 
 theta_array = np.random.uniform(0, 2*np.pi, N)
 
-K = np.ones((N, N)) # spring stiffnesses
-
 X, Z = np.meshgrid(x_array, z_array)
 A = np.sqrt((X - X.T)**2 + (Z - Z.T)**2) # starting spring lengths -> beginning
 
 np.fill_diagonal(A, 0)
-np.fill_diagonal(K, 0)
 
-iterations = 100000
-delay = 3 # number of iterations - 2 * dt = 0.02 seconds
+iterations = 20000 # 30000
+delay = 1 # number of iterations - 2 * dt = 0.02 seconds
 
 Node.N = N
-Node.K = K
 Node.A = A
 Node.id_array = ids
 Node.all_nodes = []
 
-random_inputs = random.randint(6000, 9000, size = len(ids))
+random_inputs = random.randint(3000, 5000, size = len(ids))
 
 #%% SIMULATION
 
@@ -168,9 +178,9 @@ def simulation(show=False):
         random_input = random_inputs[i]
         node = Node(id = id, x = x_array[i], z=z_array[i], 
                     theta=theta_array[i], s=0, w=0, 
-                    J = 1, beta = 0.909, zeta = 0.05, 
-                    T_theta = 0, T_s = random_input, m = 1)
-        
+                    J = 1, beta = 0.9, zeta = 0.05, 
+                    T_theta = 0 , T_s = random_input, m = 1)
+        # J = 2.5
         if anchors[i]:
             node.anchor=True
 
@@ -209,12 +219,13 @@ if os.path.exists(filename):
     os.remove(filename)
 file = {}
 
-period_ratios = np.arange(1, 4.25, 0.25)
+# increasing this ratio does not help for some reason
+period_ratios = np.arange(1, 4.25, 0.25) 
 
 for ratio in period_ratios:
     print(ratio)
     Node.T = ratio
-    data_states, _ = simulation()
+    data_states, ani = simulation()
     file[f'T={ratio}'] = data_states
     np.savez('node-simulation.npz', **file)
 
@@ -226,5 +237,6 @@ display(HTML(ani.to_jshtml()))
 
 # %%
 
-from matplotlib.animation import PillowWriter
 ani.save("animation.gif", writer='pillow', fps=10)
+
+# %%

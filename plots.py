@@ -52,7 +52,6 @@ def animation(x_coords, z_coords, theta_coords):
     ax.set_ylim(np.min(z_coords) * 0.9, np.max(z_coords) * 1.1)
     ax.set_xlabel("X")
     ax.set_ylabel("Z")
-    ax.set_title("Node Movement in X–Z Plane")
 
     # Create scatter-like markers (each node as a dot)
     points = [ax.plot([], [], "o", label=f"Node {i}")[0] for i in range(N)]
@@ -60,7 +59,6 @@ def animation(x_coords, z_coords, theta_coords):
     quiver = ax.quiver([0]*N, [0]*N, [0]*N, [0]*N,
                     angles='xy', scale_units='xy', scale=1, color='r')
 
-    ax.legend()
     arrow_length = 1
 
     # --- Init function ---

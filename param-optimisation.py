@@ -190,13 +190,13 @@ def simulation(N, spring_stiffness, delay, input_size, J, beta, m, T = 1):
     data = np.stack([x_coords, z_coords, theta_coords, s_array, w_array])
     data_states = data.reshape(-1, data.shape[2]).T
 
-    y_array = NARAM_2(np.shape(data_states)[0], T)
+    y_array = NARAM_5(np.shape(data_states)[0], T)
 
     cut = int(np.shape(data_states)[0] * 0.1) # cut first 10 percent
     X = data_states[cut:, :]
     #y_array = np.repeat(y_array_rep, 2)
 
-    y = np.array(y_array[cut + 1:])
+    y = np.array(y_array[cut:])
 
     #X_train, X_test, y_train, y_test = train_test_split(data_states, y_array, test_size=0.2, random_state=17)
     split_idx = int(0.7 * X.shape[0])
@@ -225,7 +225,16 @@ def NARAM_2(time, T): # NARMA_2
     for t in range(1, time):
         y = 0.4 * y_array[t] + 0.4 * y_array[t] * y_array[t-1] + 0.6 * Node.u(t) ** 3 + 0.1
         y_array.append(y)
-    return y_array
+    return y_array[1:]
+
+def NARAM_5(time, T): # NARMA_2
+    y_array = [0, 0, 0, 0]
+    n = 5
+    for t in range(1, time):
+        sumation = np.sum([y_array[t-j] for j in range(0, n-1)])
+        y = 0.3 * y_array[t] + 0.05 * sumation + 1.5 * u(t-n+1, T) * u(t, T) + 0.1
+        y_array.append(y)
+    return y_array[3:]
 
 
 # %%
@@ -248,13 +257,13 @@ def objective(params):
         return 1e6
 
 space = [
-    Real(1.0, 3.0, name='spring_stiffness'),
-    Integer(1, 5, name='delay'),
-    Real(1.0, 3.0, name='J'),
+    Real(0.5, 3.0, name='spring_stiffness'),
+    Integer(1, 10, name='delay'),
+    Real(0.5, 3.0, name='J'),
     #Integer(10, 20, name='N'),
-    Real(0.9, 3.0, name='friction'),
-    Real(0.5, 2, name='mass'),
-    Integer(8000, 10000, name='input_size')
+    Real(0.5, 3.0, name='friction'),
+    Real(0.1, 5, name='mass'),
+    Integer(6000, 110000, name='input_size')
 ]
 
 
