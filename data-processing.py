@@ -5,8 +5,6 @@ from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 
-#%%
-
 def u(t, T): # input signal 
     f1 = 2.11 # frequencies
     f2 = 3.73

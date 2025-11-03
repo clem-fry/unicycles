@@ -5,13 +5,13 @@ import pandas as pd
 import os
 import plots
 from IPython.display import HTML
+import importlib
 importlib.reload(plots)
 from matplotlib.animation import PillowWriter
 
 #%% 
 
 class Node():
-
     N = []
     dt = 0.01
 
@@ -38,7 +38,7 @@ class Node():
         self.T_theta = T_theta
         self.T_s = T_s
         self.m = m
-        self.K = random.randint(10, 30, size = len(ids)) / 20
+        self.K = random.randint(10, 30, size = len(ids))
 
         self.connections = []
         self.anchor = False
@@ -85,29 +85,30 @@ class Node():
                 sum += energy
         return sum
     
-    def repulsion_force(self):
-        fx, fz = 0, 0
-        d_min = 5
-        k_rep = 1
-        for node in Node.all_nodes:
-            if node is self:
-                continue
-            dx = self.x - node.x
-            dz = self.z - node.z
-            d = np.sqrt(dx**2 + dz**2) # distance to node
+    # def repulsion_force(self):
+    #     fx, fz = 0, 0
+    #     d_min = 5
+    #     k_rep = 1
+    #     for node in Node.all_nodes:
+    #         if node is self:
+    #             continue
+    #         dx = self.x - node.x
+    #         dz = self.z - node.z
+    #         d = np.sqrt(dx**2 + dz**2) # distance to node
 
-            if d < d_min and d > 0: # when within threshold
-                f = k_rep * (1/d**2 - 1/d_min**2)
-                fx += f * dx / d
-                fz += f * dz / d
+    #         if d < d_min and d > 0: # when within threshold
+    #             f = k_rep * (1/d**2 - 1/d_min**2)
+    #             fx += f * dx / d
+    #             fz += f * dz / d
 
-        return fx, fz
+    #     return fx, fz
 
     def update(self, t):
         if self.anchor:
             return()
         
         dw = 1/self.J * (self.f_theta(t) - self.zeta * self.w)
+
         self.w = self.w + Node.dt * dw
         #print('w: ', self.w)
 
@@ -141,7 +142,7 @@ class Node():
 #%% SETUP
 
 N = 20 # number of nodes: 15 to 20
-size = 10
+size = 20
 
 ids = np.arange(1, N + 1)
 
@@ -160,15 +161,15 @@ A = np.sqrt((X - X.T)**2 + (Z - Z.T)**2) # starting spring lengths -> beginning
 
 np.fill_diagonal(A, 0)
 
-iterations = 20000 # 30000
-delay = 1 # number of iterations - 2 * dt = 0.02 seconds
+iterations = 30000 # 30000
+delay = 2 # number of iterations - 2 * dt = 0.02 seconds
 
 Node.N = N
 Node.A = A
 Node.id_array = ids
 Node.all_nodes = []
 
-random_inputs = random.randint(3000, 5000, size = len(ids))
+random_inputs = random.randint(400, 7000, size = len(ids))
 
 #%% SIMULATION
 
@@ -179,7 +180,7 @@ def simulation(show=False):
         node = Node(id = id, x = x_array[i], z=z_array[i], 
                     theta=theta_array[i], s=0, w=0, 
                     J = 1, beta = 0.9, zeta = 0.05, 
-                    T_theta = 0 , T_s = random_input, m = 1)
+                    T_theta = random_input/1000 , T_s = random_input, m = 1)
         # J = 2.5
         if anchors[i]:
             node.anchor=True
@@ -236,7 +237,6 @@ data_states, ani = simulation(show = True)
 display(HTML(ani.to_jshtml()))
 
 # %%
-
 ani.save("animation.gif", writer='pillow', fps=10)
 
 # %%
