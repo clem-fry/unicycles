@@ -38,7 +38,7 @@ class Node():
         self.T_theta = T_theta
         self.T_s = T_s
         self.m = m
-        self.K = random.randint(10, 30, size = len(ids))
+        self.K = random.randint(10, 30, size = len(ids)) / 2
 
         self.connections = []
         self.anchor = False
@@ -106,7 +106,7 @@ class Node():
     def update(self, t):
         if self.anchor:
             return()
-        
+
         dw = 1/self.J * (self.f_theta(t) - self.zeta * self.w)
 
         self.w = self.w + Node.dt * dw
@@ -130,7 +130,6 @@ class Node():
 
         self.x = self.x + Node.dt * (np.cos(self.theta) * self.s)
         self.z = self.z + Node.dt * (np.sin(self.theta) * self.s)
-
 
     def u(t): # input signal 
         f1 = 2.11 # frequencies
@@ -169,7 +168,7 @@ Node.A = A
 Node.id_array = ids
 Node.all_nodes = []
 
-random_inputs = random.randint(400, 7000, size = len(ids))
+random_inputs = random.randint(1000, 1200, size = len(ids))
 
 #%% SIMULATION
 
