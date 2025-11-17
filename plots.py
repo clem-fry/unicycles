@@ -48,8 +48,8 @@ def animation(x_coords, z_coords, theta_coords):
 
     # --- Create figure and axis ---
     fig, ax = plt.subplots()
-    ax.set_xlim(np.min(x_coords) * 0.9, np.max(x_coords) * 1.1)
-    ax.set_ylim(np.min(z_coords) * 0.9, np.max(z_coords) * 1.1)
+    ax.set_xlim(np.min(x_coords), np.max(x_coords))
+    ax.set_ylim(np.min(z_coords), np.max(z_coords))
     ax.set_xlabel("X")
     ax.set_ylabel("Z")
 
@@ -87,7 +87,7 @@ def animation(x_coords, z_coords, theta_coords):
         return points + [quiver]
 
     # --- Keep the animation in a variable ---
-    ani = FuncAnimation(fig, update, frames=200, init_func=init,
+    ani = FuncAnimation(fig, update, frames=500, init_func=init,
                         blit=False, interval=100, repeat=True)
 
     return ani

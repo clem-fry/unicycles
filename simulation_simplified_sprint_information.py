@@ -28,7 +28,12 @@ class Node():
         self.matrix_row = int(np.where(Node.id_array == id)[0][0])
 
         self.x = x
+        self.x_initial = x
+        self.dx = 0
         self.z = z
+        self.z_initial = z
+        self.dz = 0
+
         self.theta = theta
         self.s = s
         self.w = w
@@ -38,7 +43,7 @@ class Node():
         self.T_theta = T_theta
         self.T_s = T_s
         self.m = m
-        self.K = random.randint(10, 30, size = len(ids)) / 2
+        self.K = random.randint(1, 3, size = len(ids)) / 10
 
         self.connections = []
         self.anchor = False
@@ -70,12 +75,44 @@ class Node():
             Kij =  self.K[node.matrix_row]
             Aij = Node.A[self.matrix_row, node.matrix_row]
             d = self.distance_to(node)
-            if d > 0:
-                energy_x = Kij * (Aij - d) * (self.x - node.x) / d
-                energy_z = Kij * (Aij - d) * (self.z - node.z) / d
-                sum_x += energy_x
-                sum_z = energy_z
-                
+            if d <= 0:
+                continue
+
+            energy_x = Kij * self.dx
+            energy_z = Kij * self.dz
+            sum_x += energy_x
+            sum_z += energy_z
+
+            min_dist = 10
+            boundary = 50
+
+            if d < min_dist:
+                nx = self.dx / d
+                nz = self.dz / d
+
+                penetration = (min_dist - d)
+                k_repulsion = 10.0  # tune this!
+                #print(f'CLOSENESS k_repulsion: {k_repulsion}, penatration: {penetration}, nx: {nx}, nz: {nz}')
+
+                Fx = k_repulsion * penetration * nx
+                Fz = k_repulsion * penetration * nz
+
+                sum_x -= Fx
+                sum_z -= Fz
+
+            if d > boundary:
+                nx = self.dx / d
+                nz = self.dz / d
+
+                penetration = (d - boundary)
+                k_repulsion = 20.0  # tune this!
+                #print(f'BOUNDARY k_repulsion: {k_repulsion}, penatration: {penetration}, nx: {nx}, nz: {nz}')
+                Fx = k_repulsion * penetration * nx
+                Fz = k_repulsion * penetration * nz
+
+                sum_x += Fx
+                sum_z += Fz
+
         return sum_x, sum_z
     
     # def repulsion_force(self):
@@ -126,6 +163,9 @@ class Node():
         self.x = self.x + Node.dt * (np.cos(self.theta) * self.s)
         self.z = self.z + Node.dt * (np.sin(self.theta) * self.s)
 
+        self.dx = self.x_initial - self.x
+        self.dz = self.z_initial - self.z
+
     def u(t): # input signal 
         f1 = 2.11 # frequencies
         f2 = 3.73
@@ -155,15 +195,15 @@ A = np.sqrt((X - X.T)**2 + (Z - Z.T)**2) # starting spring lengths -> beginning
 
 np.fill_diagonal(A, 0)
 
-iterations = 30000 # 30000
-delay = 2 # number of iterations - 2 * dt = 0.02 seconds
+iterations = 100000 # 30000
+delay = 1 # number of iterations - 2 * dt = 0.02 seconds
 
 Node.N = N
 Node.A = A
 Node.id_array = ids
 Node.all_nodes = []
 
-random_inputs = random.randint(1000, 1200, size = len(ids))
+random_inputs = random.randint(5000, 7000, size = len(ids))
 
 #%% SIMULATION
 
@@ -173,8 +213,8 @@ def simulation(show=False):
         random_input = random_inputs[i]
         node = Node(id = id, x = x_array[i], z=z_array[i], 
                     theta=theta_array[i], s=0, w=0, 
-                    J = 1, beta = 0.9, zeta = 0.05, 
-                    T_theta = random_input/1000 , T_s = random_input, m = 1)
+                    J = 0.5, beta = 3.0, zeta = 0.05, 
+                    T_theta = random_input/1000 , T_s = random_input, m = 0.1)
         # J = 2.5
         if anchors[i]:
             node.anchor=True
