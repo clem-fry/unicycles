@@ -132,6 +132,35 @@ class Node():
     #             fz += f * dz / d
 
     #     return fx, fz
+    def enforce_world_bounds(self, min_x=0, max_x=50, min_z=0, max_z=50):
+        self.x = max(min_x, min(self.x, max_x))
+        self.z = max(min_z, min(self.z, max_z))
+
+    def enforce_min_distance(self, min_radius=1.0):
+        for node in Node.all_nodes:
+            if node is self:
+                continue
+
+            dx = self.x - node.x
+            dz = self.z - node.z
+            d = np.sqrt(dx*dx + dz*dz)
+
+            if d == 0:
+                continue
+
+            min_dist = 2 * min_radius
+            if d < min_dist:
+                # Normal vector
+                nx = dx / d
+                nz = dz / d
+
+                # Amount to push this node
+                penetration = min_dist - d
+
+                # Move THIS node away (you can split between both nodes if needed)
+                self.x += nx * penetration
+                self.z += nz * penetration
+
 
     def update(self, t):
         if self.anchor:
@@ -166,6 +195,9 @@ class Node():
         self.dx = self.x_initial - self.x
         self.dz = self.z_initial - self.z
 
+        self.enforce_min_distance(min_radius=1.0)
+        self.enforce_world_bounds(-50, 50, -50, 50)
+
     def u(t): # input signal 
         f1 = 2.11 # frequencies
         f2 = 3.73
@@ -176,7 +208,7 @@ class Node():
 #%% SETUP
 
 N = 20 # number of nodes: 15 to 20
-size = 20
+size = 50
 
 ids = np.arange(1, N + 1)
 
@@ -185,8 +217,8 @@ anchor_idx = np.random.randint(N)  # pick one random anchor
 anchors[anchor_idx] = 1
 
 # locations (triangle)
-x_array = np.random.uniform(0, size, N)
-z_array = np.random.uniform(0, size, N)
+x_array = np.random.uniform(-size/2, size/2, N)
+z_array = np.random.uniform(-size/2, size, N)
 
 theta_array = np.random.uniform(0, 2*np.pi, N)
 
@@ -264,7 +296,7 @@ for ratio in period_ratios:
     file[f'T={ratio}'] = data_states
     np.savez('node-simulation.npz', **file)
 
-#%% END OF SIMULATION
+ #%% END OF SIMULATION
 # add to jupyter notebook
 
 data_states, ani = simulation(show = True)

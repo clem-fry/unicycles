@@ -44,7 +44,7 @@ def calc_nmse(y_func):
         y = np.array(y_array[cut:])
 
         #X_train, X_test, y_train, y_test = train_test_split(data_states, y_array, test_size=0.2, random_state=17)
-        split_idx = int(0.8 * X.shape[0])
+        split_idx = int(0.95 * X.shape[0])
         X_train, X_test = X[:split_idx, :], X[split_idx:, :]
         y_train, y_test = y[:split_idx], y[split_idx:]
 
@@ -58,7 +58,8 @@ def calc_nmse(y_func):
         X_train_transformed = scaler.fit_transform(X_train)
         X_test_transformed = scaler.transform(X_test)
 
-        lr = LinearRegression()
+        #lr = LinearRegression()
+        lr = Ridge()
 
         lr.fit(X_train_transformed, y_train)
 
