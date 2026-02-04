@@ -256,13 +256,13 @@ class DotNode(Node):
             sum_y += energy_y
 
         # add spring to own initial position!
-        k = self.neighbour_randoms.get(self.name, 1.0) # spring stiffness
+        k = self.neighbour_randoms.get(self.name, 1.0) # sppassring stiffness
         dx, dy = self.state['x'] - self.initial_pos['x'], self.state['y'] - self.initial_pos['y']
         d = np.sqrt(dx**2 + dy**2)
         if d > 1e-3:
             # MULTIPLYING BY 10 TO MAKE STRONGER
-            energy_x = 10 * k * (self.neighbours_rest_spring[self.name] - d) * dx / d
-            energy_y = 10 * k * (self.neighbours_rest_spring[self.name] - d) * dy / d
+            energy_x = -1000 * k * dx
+            energy_y = -1000 * k * dy
             sum_x += energy_x
             sum_y += energy_y
 
@@ -270,8 +270,8 @@ class DotNode(Node):
             self.get_logger().info(f"sum x: {sum_x} and y: {sum_y} before collision force ") 
 
         # EXCLUDE COLLISION FORCE FOR NOW
-        #sum_x += self.collision_force['x'] # collision impact
-        #sum_y += self.collision_force['y']
+        sum_x += self.collision_force['x'] # collision impact
+        sum_y += self.collision_force['y']
 
         if not MUTE:
             self.get_logger().info(f"sum x: {sum_x} and y: {sum_y} after collision force ")  
