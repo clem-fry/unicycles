@@ -16,11 +16,11 @@ from std_msgs.msg import Float64MultiArray
 #BETA = 0.3
 ZETA = 0.05
 #M = 0.1
-DT = 0.005
+DT = 0.05
 MAX_SPEED = 0.3
 MAX_ANG = 1.0
 
-MUTE = False
+MUTE = True
 
 # robot launch command:
 # ros2 launch dots_example_controllers unicycles.launch.py robot_name:=r13 anchor:=false neighbor_topics:=r14  use_sim_time:=true M:=2.283 J:=0.896 K:=0.569 BETA:=2.744 INPUT:=132.0 
@@ -43,7 +43,7 @@ class DotNode(Node):
         self.get_logger().info(f"Real robot names: {neighbours_names}")
 
             # Determine neighbor topics - use odometry filtered instead?
-        neighbours_topics = [f'/{n}/pos' for n in neighbours_names if n != name]
+        neighbours_topics = [f'/{n}/odometry/filtered' for n in neighbours_names if n != name]
         print(f"[DEBUG] Neighbor topics for {name}: {neighbours_topics}")
 
        # Declare parameters
@@ -77,12 +77,13 @@ class DotNode(Node):
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
-        self.pub = self.create_publisher(Point, 'pos', 10)
+        #self.pub = self.create_publisher(Point, 'pos', 10)
 
         self.timer = self.create_timer(DT, self.update)
+        self.global_sub = self.create_subscription(Float64MultiArray, '/global_input', self.global_u_callback, 50)
 
         # Global input
-        self.global_sub = self.create_subscription(Float64MultiArray, '/global_input', self.global_u_callback, 10)
+        #self.global_sub = self.create_subscription(Float64MultiArray, '/global_input', self.calculate_u, 10)
         #self.get_logger().info("Subscribed to /global_input")
 
         # Subscribe to the laser time of flight sensors topic. 
@@ -109,7 +110,7 @@ class DotNode(Node):
                 neighbours_topics = [neighbours_topics]
 
             for topic in neighbours_topics:
-                self.create_subscription(Point, topic, self.neighbour_callback(topic), 10)
+                self.create_subscription(Odometry, topic, self.neighbour_callback(topic), 10)
                 self.assign_neighbour_random(topic)
                 self.get_logger().info(f"[DEBUG] Subscribed to neighbour topic: {topic}")  
 
@@ -166,21 +167,50 @@ class DotNode(Node):
     def global_u_callback(self, msg: Float64MultiArray):
         self.u = msg.data[1]
 
+    def calculate_u(self):
+        now = self.get_clock().now().nanoseconds * 1e-9  # seconds
+        self.get_logger().info(f"ROS time: {now.to_msg().sec}.{now.to_msg().nanosec}")
+
+        f1, f2, f3 = 2.11, 3.73, 4.33
+
+        self.u = (
+            0.2
+            * np.sin(2 * np.pi * f1 * now)
+            * np.sin(2 * np.pi * f2 * now)
+            * np.sin(2 * np.pi * f3 * now)
+        )
+
+
     def assign_neighbour_random(self, topic_name): # create spring stiffness!
         rand_value = np.random.rand() * self.K
         self.neighbour_randoms[topic_name] = rand_value
         #self.get_logger().info(f"[DEBUG] Assigned random={rand_value:.3f} to neighbor {topic_name}")
 
     def neighbour_callback(self, topic_name):
-        def callback(msg):
-            if self.initial_pos_stored: # only begin storing neighbour information when your initial position is stored to allow for spring measurements
-                if not (topic_name in self.neighbours_positions): # only once
-                    self.neighbours_rest_spring[topic_name] = np.sqrt((msg.x - self.state['x']) ** 2 + (msg.y - self.state['y']) **2)
-                    if not MUTE:
-                        self.get_logger().info(f"Neighbour resting spring length set at: {topic_name} length: {self.neighbours_rest_spring[topic_name]}")
-                        self.get_logger().info(f"My initial position: {self.initial_pos}")
+        def callback(msg: Odometry):
 
-                self.neighbours_positions[topic_name] = (msg.x, msg.y)
+            if not self.initial_pos_stored:
+                return
+
+            x = msg.pose.pose.position.x
+            y = msg.pose.pose.position.y
+
+            self.neighbours_positions[topic_name] = {"x": x,
+                "y": y}
+
+            if topic_name not in self.neighbours_rest_spring:
+                dx = x - self.state["x"]
+                dy = y - self.state["y"]
+                self.neighbours_rest_spring[topic_name] = math.sqrt(dx*dx + dy*dy)
+
+                if not MUTE:
+                    self.get_logger().info(
+                        f"Neighbour resting spring length set: {topic_name} → {self.neighbours_rest_spring[topic_name]:.3f}"
+                    )
+                    self.get_logger().info(
+                        f"My initial position: {self.initial_pos}"
+                    )
+
         return callback
 
     def odom_callback(self, msg: Odometry): # set state depending on odom callback
@@ -205,31 +235,43 @@ class DotNode(Node):
         # d PE = k * dx
         if not self.neighbours_positions:
             return 0.0, 0.0
+        
         sum_x, sum_y = 0.0, 0.0
         # print statement of these makes it look
         #self.get_logger().info(f"[DEBUG] NEIGHBOUR POSITIONS: {self.neighbours_positions.items()}")
-        for topic, (nx, ny) in self.neighbours_positions.items():
+        for topic, pos in self.neighbours_positions.items():
+            nx = pos["x"]
+            ny = pos["y"]
+
             k = self.neighbour_randoms.get(topic, 1.0) # spring stiffness
             dx, dy = self.state['x'] - nx, self.state['y'] - ny
             d = np.sqrt(dx**2 + dy**2)
+
+            if d < 1e-3:
+                continue
+
             energy_x = k * (self.neighbours_rest_spring[topic] - d) * dx / d
             energy_y = k * (self.neighbours_rest_spring[topic] - d) * dy / d
-            sum_x += energy_x
+            sum_x += energy_x # SHOULD I CAP THESE TO ALLOW COLLISION FORCE TO INFLUENCE?
             sum_y += energy_y
 
         # add spring to own initial position!
         k = self.neighbour_randoms.get(self.name, 1.0) # spring stiffness
         dx, dy = self.state['x'] - self.initial_pos['x'], self.state['y'] - self.initial_pos['y']
-        energy_x = k * (self.neighbours_rest_spring[topic] - d) * dx / d
-        energy_y = k * (self.neighbours_rest_spring[topic] - d) * dy / d
-        sum_x += energy_x
-        sum_y += energy_y
+        d = np.sqrt(dx**2 + dy**2)
+        if d > 1e-3:
+            # MULTIPLYING BY 10 TO MAKE STRONGER
+            energy_x = 10 * k * (self.neighbours_rest_spring[self.name] - d) * dx / d
+            energy_y = 10 * k * (self.neighbours_rest_spring[self.name] - d) * dy / d
+            sum_x += energy_x
+            sum_y += energy_y
 
         if not MUTE:
             self.get_logger().info(f"sum x: {sum_x} and y: {sum_y} before collision force ") 
 
-        sum_x += self.collision_force['x'] # collision impact
-        sum_y += self.collision_force['y']
+        # EXCLUDE COLLISION FORCE FOR NOW
+        #sum_x += self.collision_force['x'] # collision impact
+        #sum_y += self.collision_force['y']
 
         if not MUTE:
             self.get_logger().info(f"sum x: {sum_x} and y: {sum_y} after collision force ")  
@@ -237,6 +279,7 @@ class DotNode(Node):
         return sum_x, sum_y
 
     def update(self):
+        #self.calculate_u()
         if not MUTE:
             self.get_logger().info(f"[DEBUG] input value {self.u}")
         if not self.anchor: # none of this will change if youre an anchor
@@ -264,11 +307,6 @@ class DotNode(Node):
             cmd.angular.z = self.state['w']
             self.cmd_vel_pub.publish(cmd)
             #self.get_logger().info(f"[DEBUG] Published to cmd_vel: linear.x={cmd.linear.x:.2f}, angular.z={cmd.angular.z:.2f}")
-
-        # Publish position - to odometry filtered?
-        msg = Point()
-        msg.x, msg.y = self.state['x'], self.state['y']
-        self.pub.publish(msg)
 
 def main(args=None):
     rclpy.init(args=args)
