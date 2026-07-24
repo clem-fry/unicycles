@@ -18,19 +18,21 @@ from skopt import gp_minimize
 from skopt.space import Real, Integer
 
 #%% 
-class Node():
+MAX_SPEED = 0.3
+MAX_ANG = 1.0
 
+class Node():
     N = []
-    dt = 0.01
+    dt = 0.02
 
     # robot would need a matrix of ids to know whose who?
     id_array = np.array([])
     # alternatively each robot could have a different impression of the springs ?
     #adjacency_matrix = [] # existance of connections - corresponding to id list?
-    K = [] # spring stiffness between agents i and j matrix
     A = [] # spring lengths between agents i and j matrix
     all_nodes = []
-    T = 1
+    T = 30
+    K = []
 
     def __init__(self, id, x, z, theta, s, w, J, beta, zeta, T_theta, T_s, m):
         self.id = id
@@ -38,6 +40,10 @@ class Node():
 
         self.x = x
         self.z = z
+
+        self.x_origin = x
+        self.z_origin = z
+
         self.theta = theta
         self.s = s
         self.w = w
@@ -47,16 +53,19 @@ class Node():
         self.T_theta = T_theta
         self.T_s = T_s
         self.m = m
+        #self.K = np.random.rand(len(ids)) * 30
 
         self.connections = []
-        self.anchor = False
 
     def add_connection(self, unicycle_connection):
         if unicycle_connection not in self.connections:
             self.connections.append(unicycle_connection)
 
     def distance_to(self, other_node):
-        return np.sqrt((self.x - other_node.x) ** 2 + (self.z - other_node.z) ** 2)
+        if self.x == other_node.x and self.z == other_node.z:
+            return 0
+        else:
+            return np.sqrt((self.x - other_node.x) ** 2 + (self.z - other_node.z) ** 2)
 
     def update_all_neighbours(self):
         for node in Node.all_nodes:
@@ -71,54 +80,79 @@ class Node():
         f = np.dot(self.T_s, Node.u(t))
         return f
 
-    def Dudx(self):
-        sum = 0
-        for node in Node.all_nodes:
-            Kij =  Node.K[self.matrix_row, node.matrix_row]
-            Aij = Node.A[self.matrix_row, node.matrix_row]
-            d = self.distance_to(node)
-            if d > 0:
-                energy = Kij * (Aij - d) * (self.x - node.x) / d
-                sum += energy
-        return sum
+    def Du(self):
+        sum_x = 0
+        sum_z = 0
+        for node in Node.all_nodes: # including ones-self
+            Kij =  Node.K[node.matrix_row, self.matrix_row]
+            Aij = Node.A[self.matrix_row, node.matrix_row] # resting spring length
+            d = self.distance_to(node) # filter out onesself
+            if d > 1e-3:
+                energy_x = Kij * (Aij - d) * (self.x - node.x) / d
+                energy_z = Kij * (Aij - d) * (self.z - node.z) / d
+                sum_x += energy_x
+                sum_z += energy_z
 
-    def Dudz(self):
-        sum = 0
-        for node in Node.all_nodes:
-            Kij =  Node.K[self.matrix_row, node.matrix_row]
-            Aij = Node.A[self.matrix_row, node.matrix_row]
-            d = self.distance_to(node)
-            if d > 0:
-                energy = Kij * (Aij - d) * (self.z - node.z) / d
-                sum += energy
-        return sum
+        Kij =  Node.K[self.matrix_row, self.matrix_row]
+        dx, dz = self.x - self.x_origin, self.z - self.z_origin
+        d = np.sqrt(dx**2 + dz**2)
+        if d > 1e-3:
+            energy_x = -Kij * dx
+            energy_z = -Kij * dz
 
+            sum_x += energy_x
+            sum_z += energy_z
+                
+        return sum_x, sum_z
+    
+    # def repulsion_force(self):
+    #     fx, fz = 0, 0
+    #     d_min = 5
+    #     k_rep = 1
+    #     for node in Node.all_nodes:
+    #         if node is self:
+    #             continue
+    #         dx = self.x - node.x
+    #         dz = self.z - node.z
+    #         d = np.sqrt(dx**2 + dz**2) # distance to node
+
+    #         if d < d_min and d > 0: # when within threshold
+    #             f = k_rep * (1/d**2 - 1/d_min**2)
+    #             fx += f * dx / d
+    #             fz += f * dz / d
+
+    #     return fx, fz
 
     def update(self, t):
-        if self.anchor:
-            return()
-        
+
         dw = 1/self.J * (self.f_theta(t) - self.zeta * self.w)
+
         self.w = self.w + Node.dt * dw
+        self.w = np.clip(self.w, -MAX_ANG, MAX_ANG)
         #print('w: ', self.w)
 
         dtheta = self.w
-        self.theta = self.theta + Node.dt * dtheta
+        self.theta = self.theta + 0.0005 * dtheta
         #print('theta: ',self.theta)
 
-        ds = 1/self.m * (self.Dudx() * np.cos(self.theta) + self.Dudz() * np.sin(self.theta) + self.f_s(t) - self.beta * self.s)
-        
-        self.s = self.s + Node.dt * ds
-        #print('Dudx: ', self.Dudx())
-        #print('Dudz: ', self.Dudz())
-        #print('f_s: ', self.f_s(t))
+        Dudx, Dudz = self.Du()
 
-        #print('s: ',self.s)
+        #fx_rep, fz_rep = self.repulsion_force()
+        ds = 1/self.m * (Dudx * np.cos(self.theta) + 
+                         Dudz * np.sin(self.theta) + 
+                         self.f_s(t) - self.beta * self.s)
+    
+        #print(ds * 0.0001)
+        self.s = self.s + 0.00001 * ds
+        self.s = np.clip(self.s, -MAX_SPEED, MAX_SPEED)
+        # print('Dudx: ', Dudx)
+        # print('Dudz: ', Dudz)
+        # print('f_s: ', self.f_s(t))
+
+        # print('s: ',self.s)
 
         self.x = self.x + Node.dt * (np.cos(self.theta) * self.s)
         self.z = self.z + Node.dt * (np.sin(self.theta) * self.s)
-        #print('x: ',self.x)
-        #print('z: ',self.z)
 
     def u(t): # input signal 
         f1 = 2.11 # frequencies
@@ -126,13 +160,11 @@ class Node():
         f3 = 4.33
         u = 0.2 * np.sin(2*np.pi * f1 * t / Node.T) * np.sin(2*np.pi * f2 * t / Node.T) * np.sin(2*np.pi * f3 * t / Node.T)
         return u
+    
 
-def simulation(N, spring_stiffness, delay, input_size, J, beta, m, T = 1):
+def simulation(N, spring_stiffness, input_size, J, time_period, beta, m):
     ids = np.arange(1, N + 1)
-
-    anchors = np.zeros(N, dtype=int)
-    anchor_idx = np.random.randint(N)  # pick one random anchor
-    anchors[anchor_idx] = 1
+    Node.T = time_period
 
     # locations (triangle)
     x_array = np.random.uniform(0, 10, N)
@@ -140,21 +172,25 @@ def simulation(N, spring_stiffness, delay, input_size, J, beta, m, T = 1):
 
     theta_array = np.random.uniform(0, 2*np.pi, N)
 
-    K = np.ones((N, N)) * spring_stiffness # spring stiffnesses
-
     X, Z = np.meshgrid(x_array, z_array)
     A = np.sqrt((X - X.T)**2 + (Z - Z.T)**2) # starting spring lengths -> beginning
 
     np.fill_diagonal(A, 0)
-    np.fill_diagonal(K, 0)
 
-    iterations = 100000
+    num_iterations = 100000
 
     Node.N = N
-    Node.K = K
     Node.A = A
     Node.id_array = ids
     Node.all_nodes = []
+    n = len(ids)
+
+    K = np.zeros((n, n))
+    upper = np.triu_indices(n)
+    K[upper] = np.random.rand(len(upper[0])) * 40
+    K[(upper[1], upper[0])] = K[upper]  # mirror
+
+    Node.K = K
 
     random_inputs = random.randint(0, input_size, size = len(ids))
 
@@ -165,9 +201,6 @@ def simulation(N, spring_stiffness, delay, input_size, J, beta, m, T = 1):
                     theta=theta_array[i], s=0, w=0, 
                     J = J, beta = beta, zeta = 0.05, 
                     T_theta = 0, T_s = random_input, m = m)
-        
-        if anchors[i]:
-            node.anchor=True
 
         Node.all_nodes.append(node)
 
@@ -177,20 +210,22 @@ def simulation(N, spring_stiffness, delay, input_size, J, beta, m, T = 1):
     w_array = [[] for _ in range(N)]
     s_array =  [[] for _ in range(N)]
 
-    for iter in range(iterations):
+    step = 0.01
+    iterations = np.arange(0, num_iterations * step, step)
+
+    for iter in iterations:
         for n, node in enumerate(Node.all_nodes): # updates all variables - not syncronised between nodes
-            Node.update(node, iter // delay)
-            if iter % delay == 0:
-                x_coords[n].append(node.x)
-                z_coords[n].append(node.z)
-                theta_coords[n].append(node.theta)
-                w_array[n].append(node.w)
-                s_array[n].append(node.s)
+            Node.update(node, iter)
+            x_coords[n].append(node.x)
+            z_coords[n].append(node.z)
+            theta_coords[n].append(node.theta)
+            w_array[n].append(node.w)
+            s_array[n].append(node.s)
 
     data = np.stack([x_coords, z_coords, theta_coords, s_array, w_array])
     data_states = data.reshape(-1, data.shape[2]).T
 
-    y_array = NARAM_5(np.shape(data_states)[0], T)
+    y_array = NARAM_2(np.shape(data_states)[0])
 
     cut = int(np.shape(data_states)[0] * 0.1) # cut first 10 percent
     X = data_states[cut:, :]
@@ -220,36 +255,28 @@ def simulation(N, spring_stiffness, delay, input_size, J, beta, m, T = 1):
 
     return test_nmse
 
-def NARAM_2(time, T): # NARMA_2
+def NARAM_2(time): # NARMA_2
     y_array = [0, 0]
-    for t in range(1, time):
-        y = 0.4 * y_array[t] + 0.4 * y_array[t] * y_array[t-1] + 0.6 * Node.u(t) ** 3 + 0.1
+    step = 0.01 # CHECK THIS MATCHES
+    iterations = np.arange(0, time * step, step)
+    iterations = iterations[1:]
+    for t in iterations:
+        y = 0.4 * y_array[-1] + 0.4 * y_array[-1] * y_array[-2] + 0.6 * Node.u(t) ** 3 + 0.1
         y_array.append(y)
     return y_array[1:]
-
-def NARAM_5(time, T): # NARMA_2
-    y_array = [0, 0, 0, 0]
-    n = 5
-    for t in range(1, time):
-        sumation = np.sum([y_array[t-j] for j in range(0, n-1)])
-        y = 0.3 * y_array[t] + 0.05 * sumation + 1.5 * u(t-n+1, T) * u(t, T) + 0.1
-        y_array.append(y)
-    return y_array[3:]
-
 
 # %%
 
 def objective(params):
-    spring_stiffness, delay, J, friction, mass, input_size = params
+    spring_stiffness, J, friction, mass, input_size, time_period = params
 
     # Round integer-like params
     N = 10
-    delay = int(delay)
     input_size = int(input_size)
 
     try:
-        cost = simulation(N, spring_stiffness, delay,
-                             input_size, J, beta=friction, m=mass)
+        cost = simulation(N, spring_stiffness,
+                             input_size, J, time_period, beta=friction, m=mass)
         if np.isnan(cost) or cost == np.inf:
             return 1e6
         return cost
@@ -257,13 +284,14 @@ def objective(params):
         return 1e6
 
 space = [
-    Real(0.5, 3.0, name='spring_stiffness'),
-    Integer(1, 10, name='delay'),
-    Real(0.5, 3.0, name='J'),
+    Real(40.0, 60.0, name='spring_stiffness'),
+    Real(0.1, 2.0, name='J'),
     #Integer(10, 20, name='N'),
-    Real(0.5, 3.0, name='friction'),
-    Real(0.1, 5, name='mass'),
-    Integer(6000, 110000, name='input_size')
+    Real(1.0, 5.0, name='friction'),
+    Real(0.001, 0.05, name='mass'),
+    Integer(5, 20, name='input_size'),
+    Integer(5, 100, name = 'time_period')
+    
 ]
 
 

@@ -59,7 +59,7 @@ def animation(x_coords, z_coords, theta_coords):
     quiver = ax.quiver([0]*N, [0]*N, [0]*N, [0]*N,
                     angles='xy', scale_units='xy', scale=1, color='r')
 
-    arrow_length = 1
+    arrow_length = 0.2
 
     # --- Init function ---
     def init():

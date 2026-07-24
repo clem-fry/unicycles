@@ -14,23 +14,30 @@ def u(t, T): # input signal
 
 def NARAM_2(time, T): # NARMA_2
     y_array = [0, 0]
-    for t in range(1, time):
-        y = 0.4 * y_array[t] + 0.4 * y_array[t] * y_array[t-1] + 0.6 * u(t, T) ** 3 + 0.1
+    step = 0.1 # CHECK THIS MATCHES
+    iterations = np.arange(0, time * step, step)
+    iterations = iterations[1:]
+    for t in iterations:
+        y = 0.4 * y_array[-1] + 0.4 * y_array[-1] * y_array[-2] + 0.6 * u(t, T) ** 3 + 0.1
         y_array.append(y)
     return y_array[1:]
 
-def NARAM_5(time, T): # NARMA_2
-    y_array = [0, 0, 0, 0]
-    n = 5
-    for t in range(1, time):
-        sumation = np.sum([y_array[t-j] for j in range(0, n-1)])
-        y = 0.3 * y_array[t] + 0.05 * sumation + 1.5 * u(t-n+1, T) * u(t, T) + 0.1
+def NARAM(time, T, n): # NARMA_2
+    y_array = [0] * (n-1)
+    step = 0.1
+    iterations = np.arange(0, time * step, step)
+    iterations = iterations[1:]
+    for i, t in enumerate(iterations):
+        sumation = np.sum([y_array[i-j] for j in range(0, n-1)])
+        y = 0.3 * y_array[i] + 0.05 * y_array[i] * sumation + 1.5 * u(t-n+1, T) * u(t, T) + 0.1
         y_array.append(y)
-    return y_array[3:]
+    return y_array[n-2:]
 
 def calc_nmse(y_func):
     test_nmse_array = []
-    period_ratios = np.arange(1, 4.25, 0.25)
+    #period_ratios = np.arange(1, 4.25, 0.25)
+    #period_ratios = np.arange(10, 42.5, 2.5)
+    period_ratios = np.arange(60, 80, 10)
     simulation_data = np.load('node-simulation.npz')
     for ratio in period_ratios:
         T = ratio
@@ -89,14 +96,14 @@ def calc_nmse(y_func):
 # %%
 
 test_nmse_array_2, period_ratios = calc_nmse(NARAM_2)
-test_nmse_array_5, period_ratios = calc_nmse(NARAM_5)
+#test_nmse_array_5, period_ratios = calc_nmse(NARAM_5)
 
 #%% plot
 %matplotlib inline
 plt.clf()
 plt.cla()
 plt.plot(period_ratios, test_nmse_array_2, 'o-', label="NARAM 2")
-plt.plot(period_ratios, test_nmse_array_5, 'o-', label = "NARAM 5")
+#plt.plot(period_ratios, test_nmse_array_5, 'o-', label = "NARAM 5")
 
 plt.xlabel("Input period ratio")
 plt.ylabel("Test NMSE")

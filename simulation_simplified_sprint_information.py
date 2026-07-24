@@ -132,6 +132,7 @@ class Node():
     #             fz += f * dz / d
 
     #     return fx, fz
+    
     def enforce_world_bounds(self, min_x=0, max_x=50, min_z=0, max_z=50):
         self.x = max(min_x, min(self.x, max_x))
         self.z = max(min_z, min(self.z, max_z))
