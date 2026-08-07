@@ -196,7 +196,7 @@ def step(state, t, T):
 
 #%% SETUP
 
-N = 30       # number of robots
+N = 50       # number of robots
 size = 0.1
 T = 70     # period of the global input signal
 
@@ -215,7 +215,7 @@ K = (7.8788 + np.random.uniform(size=(N, N)) * 5.0) * 0.3
 np.fill_diagonal(K, 0.0)
 K_self = (7.8788 + np.random.uniform(size=N) * 5.0) * 0.3
 
-BETA = np.random.uniform(1.31989, 2.830454, size=N) * 1.3
+BETA = np.random.uniform(1.31989, 2.830454, size=N) * 5 #1.3
 M = 1.0  # DotNode overrides M (and J) to 1 regardless of launch params
 
 # moving repulsion source: pushes away whichever robots it currently comes
@@ -226,10 +226,10 @@ R_GLOBAL = 0.5 * size
 
 SOURCE_MODE = 'random_walk_wall_avoidance'   # 'circle' or 'random_walk'
 SOURCE_STEP = 0.5 * size    # random_walk only: velocity-innovation scale per tick
-SOURCE_INERTIA = 0.999        # random_walk only: higher = smoother/slower-turning path
+SOURCE_INERTIA = 0.995        # random_walk only: higher = smoother/slower-turning path
 SOURCE_WALL_MARGIN = 0.2 * size   # random_walk only: distance from an edge at
                                    # which the wall push starts acting (0 outside it)
-SOURCE_WALL_STRENGTH = 0.03        # random_walk_wall_avoidance only: how hard it pushes back
+SOURCE_WALL_STRENGTH = 0.09        # random_walk_wall_avoidance only: how hard it pushes back
                                    # within that margin
 SOURCE_CENTER_PULL = 0.005     # random_walk only: restoring pull toward the arena
                                 # center: higher = tighter to center/fewer edge
@@ -330,6 +330,8 @@ data_states, ani, source_data = simulation(show=False)
 ani = replay(data_states, source_data, 30, R_GLOBAL)
 display(HTML(ani.to_jshtml()))
 
+# ani.save("animation.gif", writer="pillow", fps=10)
+
 #%%
 plots.source_path(source_data[0][5000:10000], source_data[1][5000:10000], size=size)
 
@@ -351,7 +353,8 @@ lr, nmses, ys, Xs, predictions = data_processing.calc_nmse(source_data, lag=0, p
 y_test, y_train = ys
 prediction_test, prediction_train = predictions
 
-data_processing.plot_predictions(y_test[:1000], prediction_test[:1000])
+data_processing.plot_predictions(y_test[:2000], prediction_test[:2000])
+data_processing.plot_trajectory_2d(y_test[1000:1200], prediction_test[1000:1200], size=size)
 
 
 #%% DATA SET

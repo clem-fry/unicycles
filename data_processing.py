@@ -187,6 +187,28 @@ def plot_predictions(y_test, prediction_test):
     plt.tight_layout()
     plt.show()
 
+
+def plot_trajectory_2d(y, prediction, size=None):
+    # actual vs predicted source path in the X-Y plane (rather than value vs
+    # sample-index like plot_predictions) - pass a subsection, e.g.
+    # y_test[:2000], prediction_test[:2000], to zoom in on a slice
+    _, ax = plt.subplots(figsize=(6, 6))
+    ax.plot(y[:, 0], y[:, 1], color="tab:blue", linewidth=1.5, label="actual")
+    ax.plot(prediction[:, 0], prediction[:, 1], color="tab:orange", linewidth=1.5,
+            linestyle="--", label="predicted")
+    ax.scatter(*y[0], color="tab:blue", marker="o", s=60, zorder=5, label="actual start")
+    ax.scatter(*prediction[0], color="tab:orange", marker="o", s=60, zorder=5, label="predicted start")
+
+    if size is not None:
+        ax.set_xlim(0, size)
+        ax.set_ylim(0, size)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_title("Actual vs predicted source trajectory")
+    ax.set_aspect("equal")
+    ax.legend()
+    plt.show()
+
 # %%
 
 #lr, train_nmse, test_nmse = calc_nmse(source_data)
