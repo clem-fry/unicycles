@@ -23,16 +23,41 @@ def global_input_pos(t, T, size):
     return cx + r * np.cos(omega * t), cy + r * np.sin(omega * t)
 
 
-def random_walk_pos(prev_x, prev_y, prev_vx, prev_vy, size, step_scale, inertia, center_pull):
+def _wall_push(pos, size, margin, wall_strength):
+    # zero everywhere except within `margin` of an edge, where it grows
+    # linearly into a push back toward the interior. Unlike a center-pull,
+    # this has no attractor anywhere - it never nudges the source unless
+    # it's actually near a wall, so it can't set up the resonant "ringing"
+    # a global restoring force would (a damped spring pulled toward one
+    # fixed point overshoots and swings back, giving the trajectory a
+    # periodic signature a linear readout could exploit as a shortcut).
+    if pos < margin:
+        return wall_strength * (margin - pos)
+    elif pos > size - margin:
+        return -wall_strength * (pos - (size - margin))
+    return 0.0
+
+
+def random_walk_pos(prev_x, prev_y, prev_vx, prev_vy, size, step_scale, inertia,
+                     wall_margin, wall_strength):
     # random_walk trial: the random innovation drives velocity, not position
     # directly, and velocity carries over (weighted by inertia) between
     # ticks - so the source glides on a smooth curved path instead of
-    # jittering in a new direction every tick. A gentle restoring pull
-    # toward the arena center (same idea as the robots' own K_self
-    # spring-back-to-home term) grows with distance from center, so the
-    # path curves away from the boundary before ever reaching it - no
-    # sudden velocity-flip bounce needed. np.clip is kept only as a rare
-    # safety net for extreme excursions, not the normal edge behavior.
+    # jittering in a new direction every tick. Only gets nudged when close
+    # to a wall (see _wall_push); the interior is an unbiased free random
+    # walk. np.clip is kept only as a rare safety net for extreme
+    # excursions, not the normal edge behavior.
+    vx = (inertia * prev_vx + (1 - inertia) * np.random.normal(0, step_scale)
+          + _wall_push(prev_x, size, wall_margin, wall_strength))
+    vy = (inertia * prev_vy + (1 - inertia) * np.random.normal(0, step_scale)
+          + _wall_push(prev_y, size, wall_margin, wall_strength))
+
+    x_s = np.clip(prev_x + vx, 0, size)
+    y_s = np.clip(prev_y + vy, 0, size)
+
+    return x_s, y_s, vx, vy
+
+def random_walk_oscillations(prev_x, prev_y, prev_vx, prev_vy, size, step_scale, inertia, center_pull):
     cx, cy = size / 2, size / 2
     vx = (inertia * prev_vx + (1 - inertia) * np.random.normal(0, step_scale)
           - center_pull * (prev_x - cx))
@@ -56,8 +81,15 @@ def update_source(state, t, T):
             state['source_x'], state['source_y'],
             state['source_vx'], state['source_vy'],
             state['size'], state['source_step'], state['source_inertia'],
-            state['source_center_pull'])
+            state['source_wall_margin'], state['source_wall_strength'])
         state['source_vx'], state['source_vy'] = vx, vy
+
+    elif state['source_mode'] == 'random_walk_oscillatoins':
+            x_s, y_s, vx, vy = random_walk_oscillations(
+                state['source_x'], state['source_y'],
+                state['source_vx'], state['source_vy'],
+                state['size'], state['source_step'], state['source_inertia'], state['source_centre_pull'])
+            state['source_vx'], state['source_vy'] = vx, vy
     else:
         raise ValueError(f"unknown source_mode: {state['source_mode']!r}")
     state['source_x'], state['source_y'] = x_s, y_s
@@ -192,10 +224,14 @@ M = 1.0  # DotNode overrides M (and J) to 1 regardless of launch params
 K_GLOBAL = 50.0
 R_GLOBAL = 0.5 * size
 
-SOURCE_MODE = 'random_walk'   # 'circle' or 'random_walk'
+SOURCE_MODE = 'random_walk_oscillatoins'   # 'circle' or 'random_walk'
 SOURCE_STEP = 0.5 * size    # random_walk only: velocity-innovation scale per tick
 SOURCE_INERTIA = 0.999        # random_walk only: higher = smoother/slower-turning path
-SOURCE_CENTER_PULL = 0.004     # random_walk only: restoring pull toward the arena
+SOURCE_WALL_MARGIN = 0.2 * size   # random_walk only: distance from an edge at
+                                   # which the wall push starts acting (0 outside it)
+SOURCE_WALL_STRENGTH = 0.1        # random_walk only: how hard it pushes back
+                                   # within that margin
+SOURCE_CENTER_PULL = 0.005     # random_walk only: restoring pull toward the arena
                                 # center: higher = tighter to center/fewer edge
                                 # visits, 0 = old hard-bounce-at-the-wall behavior
 
@@ -213,8 +249,10 @@ def simulation(show=False):
         'BETA': BETA, 'M': M, 'anchor': anchor,
         'size': size, 'K_global': K_GLOBAL, 'R_global': R_GLOBAL,
         'source_mode': SOURCE_MODE, 'source_step': SOURCE_STEP,
+        'source_centre_pull': SOURCE_CENTER_PULL,
         'source_inertia': SOURCE_INERTIA,
-        'source_center_pull': SOURCE_CENTER_PULL,
+        'source_wall_margin': SOURCE_WALL_MARGIN,
+        'source_wall_strength': SOURCE_WALL_STRENGTH,
         'source_x': size / 2, 'source_y': size / 2,
         'source_vx': 0.0, 'source_vy': 0.0,
     }
@@ -293,7 +331,7 @@ ani = replay(data_states, source_data, 30, R_GLOBAL)
 display(HTML(ani.to_jshtml()))
 
 #%%
-plots.source_path(source_data[0], source_data[1], size=size)
+plots.source_path(source_data[0][:5000], source_data[1][:5000], size=size)
 
 #%%
 filename = 'node-simulation.npz'
