@@ -5,8 +5,7 @@ from IPython.display import HTML
 import importlib
 importlib.reload(plots)
 import os 
-#%% Global constants - mirrors the real DotNode control law (LEDs stripped out),
-# but centralised into one vectorised update instead of N independent ROS nodes.
+
 DT = 0.1
 MAX_SPEED = 0.35
 

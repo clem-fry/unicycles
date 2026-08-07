@@ -1,0 +1,304 @@
+#%%
+import numpy as np
+import plots
+from IPython.display import HTML
+import importlib
+importlib.reload(plots)
+import data_processing
+importlib.reload(data_processing)
+from numba import njit  # if not installed: pip install numba
+
+#%%
+
+DT = 0.1
+MAX_SPEED = 0.35
+
+
+def global_input_pos(t, T, size):
+    # circle trial: point orbits the arena once per period T, replacing the
+    # old space-independent broadcast
+    cx, cy = size / 2, size / 2
+    r = size * 0.4
+    omega = 2 * np.pi / T
+    return cx + r * np.cos(omega * t), cy + r * np.sin(omega * t)
+
+
+def random_walk_pos(prev_x, prev_y, prev_vx, prev_vy, size, step_scale, inertia):
+    # random_walk trial: the random innovation drives velocity, not position
+    # directly, and velocity carries over (weighted by inertia) between
+    # ticks - so the source glides on a smooth curved path instead of
+    # jittering in a new direction every tick. Bounces (rather than clips)
+    # at the arena edges so it doesn't get stuck pressed against a wall.
+    vx = inertia * prev_vx + (1 - inertia) * np.random.normal(0, step_scale)
+    vy = inertia * prev_vy + (1 - inertia) * np.random.normal(0, step_scale)
+
+    x_s = prev_x + vx
+    y_s = prev_y + vy
+
+    if x_s < 0 or x_s > size:
+        vx = -vx
+        x_s = np.clip(x_s, 0, size)
+    if y_s < 0 or y_s > size:
+        vy = -vy
+        y_s = np.clip(y_s, 0, size)
+
+    return x_s, y_s, vx, vy
+
+
+def update_source(state, t, T):
+    # advances the repulsion source and stores its new position in state -
+    # random_walk needs the previous position, so this can't be a pure
+    # function of (t, T) the way the circle trial is
+    if state['source_mode'] == 'circle':
+        x_s, y_s = global_input_pos(t, T, state['size'])
+    elif state['source_mode'] == 'random_walk':
+        x_s, y_s, vx, vy = random_walk_pos(
+            state['source_x'], state['source_y'],
+            state['source_vx'], state['source_vy'],
+            state['size'], state['source_step'], state['source_inertia'])
+        state['source_vx'], state['source_vy'] = vx, vy
+    else:
+        raise ValueError(f"unknown source_mode: {state['source_mode']!r}")
+    state['source_x'], state['source_y'] = x_s, y_s
+    return x_s, y_s
+
+
+@njit(cache=True)
+def local_repulsion(x, y, x_s, y_s, K, R):
+    # Hookean, repulsion-only "spring" between each robot and the moving
+    # source: robots inside radius R get pushed directly away, robots
+    # outside it feel nothing - so only whoever the source is currently
+    # near ("neighbouring" it) is impacted at any given t.
+    # Explicit loop rather than vectorized numpy: with only N~30 robots,
+    # numpy's per-call dispatch overhead dominates over the actual FLOPs, so
+    # a numba-compiled loop is much faster here (see profiling in commit
+    # history / conversation - ~8x on the full step() for N=30).
+    N = x.shape[0]
+    fx = np.zeros(N)
+    fy = np.zeros(N)
+    for i in range(N):
+        dx = x[i] - x_s
+        dy = y[i] - y_s
+        d = (dx * dx + dy * dy) ** 0.5
+        d_safe = max(d, 1e-3)
+        if d < R:
+            mag = K * (R - d) / d_safe
+            fx[i] = mag * dx
+            fy[i] = mag * dy
+    return fx, fy
+
+
+@njit(cache=True)
+def Du(x, y, x0, y0, K, A, K_self):
+    # K[i, j] is the stiffness robot i perceives towards robot j. In the real
+    # node this comes from deterministic_k(), which despite its name draws a
+    # fresh random value on every call - so K is NOT symmetric here either,
+    # each side of an edge can honestly disagree about how stiff it is.
+    N = x.shape[0]
+    sum_x = np.zeros(N)
+    sum_y = np.zeros(N)
+    for i in range(N):
+        for j in range(N):
+            if i == j:
+                continue  # skip self-interaction (K[i,i] is 0 anyway)
+            dx = x[i] - x[j]
+            dy = y[i] - y[j]
+            d = (dx * dx + dy * dy) ** 0.5
+            f = K[i, j] * (A[i, j] - d) / d
+            sum_x[i] += f * dx
+            sum_y[i] += f * dy
+
+        # spring back to this robot's own starting position
+        dx0 = x[i] - x0[i]
+        dy0 = y[i] - y0[i]
+        d0 = (dx0 * dx0 + dy0 * dy0) ** 0.5
+        if d0 > 1e-3:
+            sum_x[i] += -0.5 * K_self[i] * dx0
+            sum_y[i] += -0.5 * K_self[i] * dy0
+
+    return sum_x, sum_y
+
+
+@njit(cache=True)
+def _step_core(x, y, theta, s, x0, y0, K, A, K_self, BETA, M, anchor,
+               x_s, y_s, K_global, R_global, dt, max_speed):
+    N = x.shape[0]
+    Dx, Dy = Du(x, y, x0, y0, K, A, K_self)
+    Gx, Gy = local_repulsion(x, y, x_s, y_s, K_global, R_global)
+
+    x_new = np.empty(N)
+    y_new = np.empty(N)
+    s_new = np.empty(N)
+    for i in range(N):
+        energy = (Dx[i] + Gx[i]) * np.cos(theta[i]) + (Dy[i] + Gy[i]) * np.sin(theta[i])
+        ds = (energy - BETA[i] * s[i]) / M
+        ds = min(max(ds, -4.0), 4.0)
+        sn = s[i] + ds * dt
+        sn = min(max(sn, -max_speed), max_speed)
+        # anchors don't move (real node skips its whole update() when self.anchor)
+        if anchor[i]:
+            x_new[i] = x[i]
+            y_new[i] = y[i]
+            s_new[i] = s[i]
+        else:
+            x_new[i] = x[i] + dt * np.cos(theta[i]) * sn
+            y_new[i] = y[i] + dt * np.sin(theta[i]) * sn
+            s_new[i] = sn
+    return x_new, y_new, s_new
+
+
+def step(state, t, T):
+    # thin wrapper: unpacks state, runs the numba-compiled core, writes the
+    # result back - update_source() stays plain Python since it's cheap and
+    # touches numpy's global RNG (numba has its own separate RNG state)
+    x_s, y_s = update_source(state, t, T)
+    x_new, y_new, s_new = _step_core(
+        state['x'], state['y'], state['theta'], state['s'],
+        state['x0'], state['y0'], state['K'], state['A'], state['K_self'],
+        state['BETA'], state['M'], state['anchor'],
+        x_s, y_s, state['K_global'], state['R_global'], DT, MAX_SPEED)
+    state['x'] = x_new
+    state['y'] = y_new
+    state['s'] = s_new
+
+#%% SETUP
+
+N = 30       # number of robots
+size = 0.1
+T = 70     # period of the global input signal
+
+x0 = np.random.uniform(0, size, N)
+y0 = np.random.uniform(0, size, N)
+theta = np.random.uniform(0, 2*np.pi, N)  # fixed for the whole run: the real
+                                           # node never publishes angular.z
+
+# resting spring length between every pair = their distance at t=0, matching
+# neighbours_rest_spring being set on the first neighbour callback
+dx0 = x0[:, None] - x0[None, :]
+dy0 = y0[:, None] - y0[None, :]
+A = np.hypot(dx0, dy0)
+
+K = (7.8788 + np.random.uniform(size=(N, N)) * 5.0) * 0.3
+np.fill_diagonal(K, 0.0)
+K_self = (7.8788 + np.random.uniform(size=N) * 5.0) * 0.3
+
+BETA = np.random.uniform(1.31989, 2.830454, size=N) * 1.3
+M = 1.0  # DotNode overrides M (and J) to 1 regardless of launch params
+
+# moving repulsion source: pushes away whichever robots it currently comes
+# within R_global of. SOURCE_MODE picks how it moves - 'circle' orbits the
+# arena (see global_input_pos), 'random_walk' drifts via random_walk_pos
+K_GLOBAL = 50.0
+R_GLOBAL = 0.5 * size
+
+SOURCE_MODE = 'random_walk'   # 'circle' or 'random_walk'
+SOURCE_STEP = 0.5 * size    # random_walk only: velocity-innovation scale per tick
+SOURCE_INERTIA = 0.999        # random_walk only: higher = smoother/slower-turning path
+
+anchor = np.zeros(N, dtype=bool)
+# anchor[np.random.randint(N)] = True  # uncomment to freeze one robot in place
+
+num_iterations = 50000
+
+#%% SIMULATION
+
+def simulation(show=False):
+    state = {
+        'x': x0.copy(), 'y': y0.copy(), 'theta': theta, 's': np.zeros(N),
+        'x0': x0, 'y0': y0, 'K': K, 'A': A, 'K_self': K_self,
+        'BETA': BETA, 'M': M, 'anchor': anchor,
+        'size': size, 'K_global': K_GLOBAL, 'R_global': R_GLOBAL,
+        'source_mode': SOURCE_MODE, 'source_step': SOURCE_STEP,
+        'source_inertia': SOURCE_INERTIA,
+        'source_x': size / 2, 'source_y': size / 2,
+        'source_vx': 0.0, 'source_vy': 0.0,
+    }
+
+    iterations = np.arange(0, num_iterations * DT, DT)
+    n_steps = len(iterations)
+
+    # preallocated arrays instead of Python lists built up via .append() in
+    # a per-robot loop - that was 4*N scalar list.append() calls every tick
+    # (120M+ over a million-iteration run), which dominated runtime far more
+    # than the actual physics. A vectorized array write per tick is much
+    # cheaper.
+    x_coords = np.empty((N, n_steps))
+    y_coords = np.empty((N, n_steps))
+    theta_coords = np.empty((N, n_steps))
+    s_array = np.empty((N, n_steps))
+    source_x = np.empty(n_steps)
+    source_y = np.empty(n_steps)
+
+    for i, t in enumerate(iterations):
+        step(state, t, T)
+        x_coords[:, i] = state['x']
+        y_coords[:, i] = state['y']
+        theta_coords[:, i] = state['theta']
+        s_array[:, i] = state['s']
+        source_x[i] = state['source_x']
+        source_y[i] = state['source_y']
+
+        # keyed off the integer index rather than t itself - t drifts off
+        # exact multiples of 1000 due to float accumulation in np.arange,
+        # so `t % 1000 == 0` silently stops firing partway through a long run
+        if i % 10000 == 0:
+            print(f"{i}/{n_steps}  (t={t:.1f})")
+
+    data = np.stack([x_coords, y_coords, theta_coords, s_array])
+    data_states = data.reshape(-1, data.shape[2]).T
+
+    if show:
+        ani = plots.animation(x_coords, y_coords, theta_coords,
+                               source_x=source_x, source_y=source_y,
+                               source_radius=state['R_global'])
+    else:
+        ani = None
+
+    source_data = np.array([source_x, source_y])
+    return data_states, ani, source_data
+
+def unpack_data_states(data_states, N):
+    # inverse of the x/y/theta/s -> data_states packing at the end of
+    # simulation(): columns are ordered state-major (state_idx*N + node_idx),
+    # so this just undoes that reshape/transpose
+    T = data_states.shape[0]
+    x_coords, y_coords, theta_coords, s_array = data_states.T.reshape(4, N, T)
+    return x_coords, y_coords, theta_coords, s_array
+
+
+def replay(data_states, source_data, N, R_global, max_frames=500):
+    # re-render the animation for an already-computed run (still in memory,
+    # or reloaded from node-simulation.npz) without resimulating
+    x_coords, y_coords, theta_coords, _ = unpack_data_states(data_states, N)
+    source_x, source_y = source_data[0], source_data[1]
+    return plots.animation(x_coords, y_coords, theta_coords,
+                            source_x=source_x, source_y=source_y,
+                            source_radius=R_global, max_frames=max_frames)
+
+#%% RUN + ANIMATE
+
+T = 30
+
+data_states, ani, source_data = simulation(show=False)
+#display(HTML(ani.to_jshtml()))
+
+#%%
+
+plots.source_path(source_data[0], source_data[1], size=size)
+
+#%%
+filename = 'node-simulation.npz'
+
+# reuse the run from RUN + ANIMATE above rather than re-simulating
+np.savez(filename, data_states=data_states,
+         source_x=source_data[0], source_y=source_data[1], T=T)
+
+
+#%%
+
+lr, train_nmse, test_nmse = data_processing.calc_nmse(source_data, lag=2)
+#data_processing.plot_coefficients(lr)
+
+# %%
+#%% DATA SET
+
