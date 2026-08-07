@@ -38,7 +38,7 @@ def _wall_push(pos, size, margin, wall_strength):
     return 0.0
 
 
-def random_walk_pos(prev_x, prev_y, prev_vx, prev_vy, size, step_scale, inertia,
+def random_walk_wall_avoidance(prev_x, prev_y, prev_vx, prev_vy, size, step_scale, inertia,
                      wall_margin, wall_strength):
     # random_walk trial: the random innovation drives velocity, not position
     # directly, and velocity carries over (weighted by inertia) between
@@ -76,8 +76,8 @@ def update_source(state, t, T):
     # function of (t, T) the way the circle trial is
     if state['source_mode'] == 'circle':
         x_s, y_s = global_input_pos(t, T, state['size'])
-    elif state['source_mode'] == 'random_walk':
-        x_s, y_s, vx, vy = random_walk_pos(
+    elif state['source_mode'] == 'random_walk_wall_avoidance':
+        x_s, y_s, vx, vy = random_walk_wall_avoidance(
             state['source_x'], state['source_y'],
             state['source_vx'], state['source_vy'],
             state['size'], state['source_step'], state['source_inertia'],
@@ -224,12 +224,12 @@ M = 1.0  # DotNode overrides M (and J) to 1 regardless of launch params
 K_GLOBAL = 50.0
 R_GLOBAL = 0.5 * size
 
-SOURCE_MODE = 'random_walk_oscillatoins'   # 'circle' or 'random_walk'
+SOURCE_MODE = 'random_walk_wall_avoidance'   # 'circle' or 'random_walk'
 SOURCE_STEP = 0.5 * size    # random_walk only: velocity-innovation scale per tick
 SOURCE_INERTIA = 0.999        # random_walk only: higher = smoother/slower-turning path
 SOURCE_WALL_MARGIN = 0.2 * size   # random_walk only: distance from an edge at
                                    # which the wall push starts acting (0 outside it)
-SOURCE_WALL_STRENGTH = 0.1        # random_walk only: how hard it pushes back
+SOURCE_WALL_STRENGTH = 0.03        # random_walk_wall_avoidance only: how hard it pushes back
                                    # within that margin
 SOURCE_CENTER_PULL = 0.005     # random_walk only: restoring pull toward the arena
                                 # center: higher = tighter to center/fewer edge
@@ -331,7 +331,7 @@ ani = replay(data_states, source_data, 30, R_GLOBAL)
 display(HTML(ani.to_jshtml()))
 
 #%%
-plots.source_path(source_data[0][:5000], source_data[1][:5000], size=size)
+plots.source_path(source_data[0][5000:10000], source_data[1][5000:10000], size=size)
 
 #%%
 filename = 'node-simulation.npz'
