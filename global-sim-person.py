@@ -211,18 +211,35 @@ dx0 = x0[:, None] - x0[None, :]
 dy0 = y0[:, None] - y0[None, :]
 A = np.hypot(dx0, dy0)
 
-K = (7.8788 + np.random.uniform(size=(N, N)) * 5.0) * 0.3
-np.fill_diagonal(K, 0.0)
-K_self = (7.8788 + np.random.uniform(size=N) * 5.0) * 0.3
+# best trial from param_optimisation.py's Bayesian search (trial 86,
+# test_nmse=0.00288 on a short 20,000-step search run - that's much shorter
+# than num_iterations below, so treat this run as the confirmation check
+# before trusting the result)
+BETA_SCALE = 0.2575741508217526
+K_SCALE = 0.13674124212076125
+K_SELF_SCALE = 2.5904874601780103
+CONNECTIVITY_PROB = 0.37219226119311855
+R_GLOBAL_FRAC = 0.5819262923311888
+K_GLOBAL_SCALE = 2.233767828569402
 
-BETA = np.random.uniform(1.31989, 2.830454, size=N) * 5 #1.3
+K = (7.8788 + np.random.uniform(size=(N, N)) * 5.0) * 0.3 * K_SCALE
+np.fill_diagonal(K, 0.0)
+# Erdos-Renyi sparsity from the param search: keep each directed edge with
+# probability CONNECTIVITY_PROB (independently per edge, same as K's
+# stiffness values not being symmetric - see Du's docstring)
+connectivity_mask = np.random.uniform(size=(N, N)) < CONNECTIVITY_PROB
+K = K * connectivity_mask
+
+K_self = (7.8788 + np.random.uniform(size=N) * 5.0) * 0.3 * K_SELF_SCALE
+
+BETA = np.random.uniform(1.31989, 2.830454, size=N) * 5 * BETA_SCALE
 M = 1.0  # DotNode overrides M (and J) to 1 regardless of launch params
 
 # moving repulsion source: pushes away whichever robots it currently comes
 # within R_global of. SOURCE_MODE picks how it moves - 'circle' orbits the
 # arena (see global_input_pos), 'random_walk' drifts via random_walk_pos
-K_GLOBAL = 50.0
-R_GLOBAL = 0.5 * size
+K_GLOBAL = 50.0 * K_GLOBAL_SCALE
+R_GLOBAL = R_GLOBAL_FRAC * size
 
 SOURCE_MODE = 'random_walk_wall_avoidance'   # 'circle' or 'random_walk'
 SOURCE_STEP = 0.5 * size    # random_walk only: velocity-innovation scale per tick
