@@ -43,14 +43,20 @@ from matplotlib.animation import FuncAnimation
 
 # %% PLOTTING
 
-def animation(x_coords, z_coords, theta_coords, source_x=None, source_y=None, source_radius=None, max_frames=500):
+def animation(x_coords, z_coords, theta_coords, source_x=None, source_y=None, source_radius=None, max_frames=500, from_start=True):
     N = np.shape(x_coords)[0]
     total_steps = np.shape(x_coords)[1]
-    # sample evenly across the *whole* run rather than just the first
-    # max_frames steps, so long runs (large num_iterations) are still shown
-    # in full instead of only their opening moments - rendering cost stays
-    # capped at max_frames either way
-    frame_idx = np.linspace(0, total_steps - 1, min(max_frames, total_steps)).astype(int)
+    n_frames = min(max_frames, total_steps)
+    if from_start:
+        # just the opening n_frames steps, e.g. for inspecting initial
+        # transient behavior rather than the whole run
+        frame_idx = np.arange(n_frames)
+    else:
+        # sample evenly across the *whole* run rather than just the first
+        # max_frames steps, so long runs (large num_iterations) are still
+        # shown in full instead of only their opening moments - rendering
+        # cost stays capped at max_frames either way
+        frame_idx = np.linspace(0, total_steps - 1, n_frames).astype(int)
 
     # --- Create figure and axis ---
     fig, ax = plt.subplots()

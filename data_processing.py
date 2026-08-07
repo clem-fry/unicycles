@@ -107,7 +107,8 @@ def add_lag(data_states, lag):
     return np.concatenate([data_states, delayed], axis=1)
 
 
-def calc_nmse(y_array, lag=0):
+
+def calc_nmse(y_array, lag=0, plot=False):
     # fits the swarm's recorded states to the moving repulsion source's own
     # position - i.e. can the reservoir decode where the stimulus currently is
     simulation_data = np.load('node-simulation.npz')
@@ -160,7 +161,31 @@ def calc_nmse(y_array, lag=0):
 
     print(f"Train NMSE: {train_nmse:.6f}")
     print(f"Test NMSE:  {test_nmse:.6f}")
-    return lr, train_nmse, test_nmse
+
+    if plot:
+        plot_predictions(y_test, prediction_test)
+
+    nmses = [train_nmse, test_nmse]
+    ys = [y_train, y_test]
+    Xs = [X_train_transformed, X_test_transformed]
+    predictions = [prediction_train, prediction_test]
+
+    return lr, nmses, ys, Xs, predictions
+
+def plot_predictions(y_test, prediction_test):
+    target_names = ["source_x", "source_y"]
+    n_targets = y_test.shape[1]
+    _, axes = plt.subplots(1, n_targets, figsize=(6 * n_targets, 4), squeeze=False)
+    for j, ax in enumerate(axes[0]):
+        name = target_names[j] if j < len(target_names) else f"target_{j}"
+        ax.plot(y_test[:, j], label="actual")
+        ax.plot(prediction_test[:, j], label="predicted")
+        ax.set_xlabel("test sample index")
+        ax.set_ylabel(name)
+        ax.set_title(f"{name}: actual vs predicted")
+        ax.legend()
+    plt.tight_layout()
+    plt.show()
 
 # %%
 

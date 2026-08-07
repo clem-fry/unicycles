@@ -23,24 +23,24 @@ def global_input_pos(t, T, size):
     return cx + r * np.cos(omega * t), cy + r * np.sin(omega * t)
 
 
-def random_walk_pos(prev_x, prev_y, prev_vx, prev_vy, size, step_scale, inertia):
+def random_walk_pos(prev_x, prev_y, prev_vx, prev_vy, size, step_scale, inertia, center_pull):
     # random_walk trial: the random innovation drives velocity, not position
     # directly, and velocity carries over (weighted by inertia) between
     # ticks - so the source glides on a smooth curved path instead of
-    # jittering in a new direction every tick. Bounces (rather than clips)
-    # at the arena edges so it doesn't get stuck pressed against a wall.
-    vx = inertia * prev_vx + (1 - inertia) * np.random.normal(0, step_scale)
-    vy = inertia * prev_vy + (1 - inertia) * np.random.normal(0, step_scale)
+    # jittering in a new direction every tick. A gentle restoring pull
+    # toward the arena center (same idea as the robots' own K_self
+    # spring-back-to-home term) grows with distance from center, so the
+    # path curves away from the boundary before ever reaching it - no
+    # sudden velocity-flip bounce needed. np.clip is kept only as a rare
+    # safety net for extreme excursions, not the normal edge behavior.
+    cx, cy = size / 2, size / 2
+    vx = (inertia * prev_vx + (1 - inertia) * np.random.normal(0, step_scale)
+          - center_pull * (prev_x - cx))
+    vy = (inertia * prev_vy + (1 - inertia) * np.random.normal(0, step_scale)
+          - center_pull * (prev_y - cy))
 
-    x_s = prev_x + vx
-    y_s = prev_y + vy
-
-    if x_s < 0 or x_s > size:
-        vx = -vx
-        x_s = np.clip(x_s, 0, size)
-    if y_s < 0 or y_s > size:
-        vy = -vy
-        y_s = np.clip(y_s, 0, size)
+    x_s = np.clip(prev_x + vx, 0, size)
+    y_s = np.clip(prev_y + vy, 0, size)
 
     return x_s, y_s, vx, vy
 
@@ -55,7 +55,8 @@ def update_source(state, t, T):
         x_s, y_s, vx, vy = random_walk_pos(
             state['source_x'], state['source_y'],
             state['source_vx'], state['source_vy'],
-            state['size'], state['source_step'], state['source_inertia'])
+            state['size'], state['source_step'], state['source_inertia'],
+            state['source_center_pull'])
         state['source_vx'], state['source_vy'] = vx, vy
     else:
         raise ValueError(f"unknown source_mode: {state['source_mode']!r}")
@@ -194,11 +195,14 @@ R_GLOBAL = 0.5 * size
 SOURCE_MODE = 'random_walk'   # 'circle' or 'random_walk'
 SOURCE_STEP = 0.5 * size    # random_walk only: velocity-innovation scale per tick
 SOURCE_INERTIA = 0.999        # random_walk only: higher = smoother/slower-turning path
+SOURCE_CENTER_PULL = 0.004     # random_walk only: restoring pull toward the arena
+                                # center: higher = tighter to center/fewer edge
+                                # visits, 0 = old hard-bounce-at-the-wall behavior
 
 anchor = np.zeros(N, dtype=bool)
 # anchor[np.random.randint(N)] = True  # uncomment to freeze one robot in place
 
-num_iterations = 50000
+num_iterations = 500000
 
 #%% SIMULATION
 
@@ -210,6 +214,7 @@ def simulation(show=False):
         'size': size, 'K_global': K_GLOBAL, 'R_global': R_GLOBAL,
         'source_mode': SOURCE_MODE, 'source_step': SOURCE_STEP,
         'source_inertia': SOURCE_INERTIA,
+        'source_center_pull': SOURCE_CENTER_PULL,
         'source_x': size / 2, 'source_y': size / 2,
         'source_vx': 0.0, 'source_vy': 0.0,
     }
@@ -266,24 +271,28 @@ def unpack_data_states(data_states, N):
     return x_coords, y_coords, theta_coords, s_array
 
 
-def replay(data_states, source_data, N, R_global, max_frames=500):
+def replay(data_states, source_data, N, R_global, max_frames=500, from_start=True):
     # re-render the animation for an already-computed run (still in memory,
     # or reloaded from node-simulation.npz) without resimulating
     x_coords, y_coords, theta_coords, _ = unpack_data_states(data_states, N)
     source_x, source_y = source_data[0], source_data[1]
     return plots.animation(x_coords, y_coords, theta_coords,
                             source_x=source_x, source_y=source_y,
-                            source_radius=R_global, max_frames=max_frames)
+                            source_radius=R_global, max_frames=max_frames,
+                            from_start=from_start)
 
 #%% RUN + ANIMATE
 
-T = 30
+T = 50
 
 data_states, ani, source_data = simulation(show=False)
 #display(HTML(ani.to_jshtml()))
 
 #%%
+ani = replay(data_states, source_data, 30, R_GLOBAL)
+display(HTML(ani.to_jshtml()))
 
+#%%
 plots.source_path(source_data[0], source_data[1], size=size)
 
 #%%
@@ -296,9 +305,16 @@ np.savez(filename, data_states=data_states,
 
 #%%
 
-lr, train_nmse, test_nmse = data_processing.calc_nmse(source_data, lag=2)
+lr, nmses, ys, Xs, predictions = data_processing.calc_nmse(source_data, lag=0, plot=True)
 #data_processing.plot_coefficients(lr)
 
 # %%
+
+y_test, y_train = ys
+prediction_test, prediction_train = predictions
+
+data_processing.plot_predictions(y_test[:1000], prediction_test[:1000])
+
+
 #%% DATA SET
 
