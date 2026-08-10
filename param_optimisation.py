@@ -146,7 +146,7 @@ def step(state, t):
 #%% BASELINE (mirrors the current SETUP in global-sim-person.py - the
 # "realistic, calibrated" reference point the search stays near)
 
-N = 50
+N = 10
 SIZE = 0.1
 ANCHOR = np.zeros(N, dtype=bool)
 M = 1.0

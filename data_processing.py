@@ -113,6 +113,7 @@ def calc_nmse(y_array, lag=0, plot=False):
     # position - i.e. can the reservoir decode where the stimulus currently is
     simulation_data = np.load('node-simulation.npz')
     data_states = simulation_data['data_states']
+
     data_states = add_lag(data_states, lag)
 
     cut = int(np.shape(data_states)[0] * 0.1) # cut first 10 percent
@@ -123,7 +124,7 @@ def calc_nmse(y_array, lag=0, plot=False):
     y = np.array(y_array)[:, cut:].T
 
     #X_train, X_test, y_train, y_test = train_test_split(data_states, y_array, test_size=0.2, random_state=17)
-    split_idx = int(0.95 * X.shape[0])
+    split_idx = int(0.8 * X.shape[0])
     X_train, X_test = X[:split_idx, :], X[split_idx:, :]
     y_train, y_test = y[:split_idx], y[split_idx:]
 
@@ -138,7 +139,7 @@ def calc_nmse(y_array, lag=0, plot=False):
     X_test_transformed = scaler.transform(X_test)
 
     #lr = LinearRegression()
-    lr = Ridge()
+    lr = Ridge(alpha=10)
 
     lr.fit(X_train_transformed, y_train)
 

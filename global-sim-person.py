@@ -14,6 +14,32 @@ DT = 0.1
 MAX_SPEED = 0.35
 
 
+def init_positions(layout, N, size):
+    # initial robot placement - 'random' (original behavior), 'grid' (evenly
+    # spaced on a square grid), or 'circle' (evenly spaced on a ring around
+    # the arena center)
+    if layout == 'random':
+        x0 = np.random.uniform(0, size, N)
+        y0 = np.random.uniform(0, size, N)
+    elif layout == 'grid':
+        n_cols = int(np.ceil(np.sqrt(N)))
+        n_rows = int(np.ceil(N / n_cols))
+        xs = (np.arange(n_cols) + 0.5) * (size / n_cols)
+        ys = (np.arange(n_rows) + 0.5) * (size / n_rows)
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        x0 = grid_x.ravel()[:N]
+        y0 = grid_y.ravel()[:N]
+    elif layout == 'circle':
+        cx, cy = size / 2, size / 2
+        r = size * 0.4
+        angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
+        x0 = cx + r * np.cos(angles)
+        y0 = cy + r * np.sin(angles)
+    else:
+        raise ValueError(f"unknown layout: {layout!r}")
+    return x0, y0
+
+
 def global_input_pos(t, T, size):
     # circle trial: point orbits the arena once per period T, replacing the
     # old space-independent broadcast
@@ -196,12 +222,12 @@ def step(state, t, T):
 
 #%% SETUP
 
-N = 50       # number of robots
+N = 10       # number of robots
 size = 0.1
 T = 70     # period of the global input signal
 
-x0 = np.random.uniform(0, size, N)
-y0 = np.random.uniform(0, size, N)
+INIT_LAYOUT = 'random'   # 'random', 'grid', or 'circle'
+x0, y0 = init_positions(INIT_LAYOUT, N, size)
 theta = np.random.uniform(0, 2*np.pi, N)  # fixed for the whole run: the real
                                            # node never publishes angular.z
 
@@ -254,8 +280,6 @@ SOURCE_CENTER_PULL = 0.005     # random_walk only: restoring pull toward the are
 
 anchor = np.zeros(N, dtype=bool)
 # anchor[np.random.randint(N)] = True  # uncomment to freeze one robot in place
-
-num_iterations = 500000
 
 #%% SIMULATION
 
@@ -340,14 +364,16 @@ def replay(data_states, source_data, N, R_global, max_frames=500, from_start=Tru
 
 T = 50
 
+num_iterations = 3000
+
 data_states, ani, source_data = simulation(show=False)
 #display(HTML(ani.to_jshtml()))
 
 #%%
-ani = replay(data_states, source_data, 30, R_GLOBAL)
+ani = replay(data_states, source_data, N, R_GLOBAL)
 display(HTML(ani.to_jshtml()))
 
-# ani.save("animation.gif", writer="pillow", fps=10)
+#ani.save("animation.gif", writer="pillow", fps=10)
 
 #%%
 plots.source_path(source_data[0][5000:10000], source_data[1][5000:10000], size=size)
@@ -367,12 +393,27 @@ lr, nmses, ys, Xs, predictions = data_processing.calc_nmse(source_data, lag=0, p
 
 # %%
 
-y_test, y_train = ys
-prediction_test, prediction_train = predictions
+y_train, y_test = ys
+prediction_train, prediction_test = predictions
 
 data_processing.plot_predictions(y_test[:2000], prediction_test[:2000])
 data_processing.plot_trajectory_2d(y_test[1000:1200], prediction_test[1000:1200], size=size)
 
 
-#%% DATA SET
+#%% TRAIN PLOT
 
+y_train, y_test = ys
+prediction_train, prediction_test = predictions
+
+data_processing.plot_predictions(y_train, prediction_train)
+data_processing.plot_trajectory_2d(y_train, prediction_train, size=size)
+
+#%% TEST PLOT
+
+y_train, y_test = ys
+prediction_train, prediction_test = predictions
+
+data_processing.plot_predictions(y_test, prediction_test)
+data_processing.plot_trajectory_2d(y_test, prediction_test, size=size)
+
+# %%
