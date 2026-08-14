@@ -163,6 +163,37 @@ def source_path(source_x, source_y, size=None):
     print(f"X range: [{source_x.min():.3f}, {source_x.max():.3f}]")
     print(f"Y range: [{source_y.min():.3f}, {source_y.max():.3f}]")
 
+
+def weight_heatmap(lr, x0, y0, n_states=4, size=None):
+    # spatial heatmap of the linear readout's weights: each robot's total
+    # |weight| (summed across its states x/y/theta/s, averaged across
+    # targets if predicting both source_x and source_y), plotted at its
+    # actual arena start position - shows *where* the most informative
+    # robots are, complementing data_processing.plot_coefficients' abstract
+    # Node x State matrix view
+    coef_rows = np.atleast_2d(lr.coef_)  # (n_targets, n_features)
+    n_nodes = coef_rows.shape[-1] // n_states
+
+    # features are state-major (state_idx * n_nodes + node_idx), matching
+    # the data_states packing in global-sim-person.py's simulation()
+    importance_per_target = [
+        np.abs(coefs.reshape(n_states, n_nodes)).sum(axis=0) for coefs in coef_rows
+    ]
+    importance = np.mean(importance_per_target, axis=0)  # (n_nodes,)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    sc = ax.scatter(x0, y0, c=importance, cmap="viridis", s=250, edgecolors="k")
+    fig.colorbar(sc, ax=ax, label="total |weight| (summed over states)")
+
+    if size is not None:
+        ax.set_xlim(0, size)
+        ax.set_ylim(0, size)
+    ax.set_xlabel("X (start position)")
+    ax.set_ylabel("Y (start position)")
+    ax.set_title("Readout weight importance by robot position")
+    ax.set_aspect("equal")
+    plt.show()
+
 #%%
 # u_array = []
 # for i in range(200):

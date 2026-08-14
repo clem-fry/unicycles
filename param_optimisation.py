@@ -42,7 +42,7 @@ MAX_SPEED = 0.35
 def _wall_push(pos, size, margin, wall_strength):
     if pos < margin:
         return wall_strength * (margin - pos)
-    elif pos > size - margin:
+    elif pos > size/2 - margin:
         return -wall_strength * (pos - (size - margin))
     return 0.0
 
@@ -147,7 +147,7 @@ def step(state, t):
 # "realistic, calibrated" reference point the search stays near)
 
 N = 10
-SIZE = 0.1
+SIZE = 1
 ANCHOR = np.zeros(N, dtype=bool)
 M = 1.0
 
@@ -172,8 +172,8 @@ SEARCH_RANGES = {
     'k_scale':            (0.01, 5.0),
     'k_self_scale':        (0.01, 5.0),
     'connectivity_prob':   (0.2, 1.0),
-    'r_global_frac':       (0.1, 0.6),
     'k_global_scale':      (0.3, 3.0),
+    'source_step': (0.1 * SIZE, 0.5 * SIZE)
 }
 
 ALPHA_CANDIDATES = [0.1, 1.0, 10.0, 100.0, 200.0]
@@ -189,8 +189,18 @@ SEARCH_ITERATIONS = 20000  # short relative to the 500,000-step "production"
 
 def build_state(params, seed):
     rng = np.random.RandomState(seed)
-    x0 = rng.uniform(0, SIZE, N)
-    y0 = rng.uniform(0, SIZE, N)
+    # min distance = 0.25 * SIZE
+
+    n_cols = int(np.ceil(np.sqrt(N)))
+    n_rows = int(np.ceil(N / n_cols))
+    xs = (np.arange(n_cols) + 0.5) * (SIZE / n_cols)
+    ys = (np.arange(n_rows) + 0.5) * (SIZE / n_rows)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    x0 = grid_x.ravel()[:N]
+    y0 = grid_y.ravel()[:N]
+    
+    #x0, y0 = _random_positions_min_dist(N, SIZE, 0.2 * SIZE)
+
     theta = rng.uniform(0, 2 * np.pi, N)
 
     A = np.hypot(x0[:, None] - x0[None, :], y0[:, None] - y0[None, :])
@@ -208,14 +218,16 @@ def build_state(params, seed):
     BETA = rng.uniform(BASE_BETA_LOW, BASE_BETA_HIGH, size=N) * BASE_BETA_MULT * params['beta_scale']
 
     K_global = BASE_K_GLOBAL * params['k_global_scale']
-    R_global = params['r_global_frac'] * SIZE
+    R_global = 0.2 * SIZE
+
+    source_step = params['source_step']
 
     return {
         'x': x0.copy(), 'y': y0.copy(), 'theta': theta, 's': np.zeros(N),
         'x0': x0, 'y0': y0, 'K': K, 'A': A, 'K_self': K_self,
         'BETA': BETA, 'M': M, 'anchor': ANCHOR,
         'size': SIZE, 'K_global': K_global, 'R_global': R_global,
-        'source_step': SOURCE_STEP, 'source_inertia': SOURCE_INERTIA,
+        'source_step': source_step, 'source_inertia': SOURCE_INERTIA,
         'source_wall_margin': SOURCE_WALL_MARGIN, 'source_wall_strength': SOURCE_WALL_STRENGTH,
         'source_x': SIZE / 2, 'source_y': SIZE / 2,
         'source_vx': 0.0, 'source_vy': 0.0,
@@ -242,7 +254,7 @@ def simulate(state, num_iterations):
         source_x[i] = state['source_x']
         source_y[i] = state['source_y']
 
-    data = np.stack([x_coords, y_coords, theta_coords, s_array])
+    data = np.stack([x_coords[-int(N/2):], y_coords[-int(N/2):], theta_coords[-int(N/2):], s_array[-int(N/2):]])
     data_states = data.reshape(-1, data.shape[2]).T
     source_data = np.array([source_x, source_y])
     return data_states, source_data
@@ -299,6 +311,28 @@ def run_bayesian_search(n_trials=N_TRIALS, seed=0):
                                  sampler=optuna.samplers.TPESampler(seed=seed))
     study.optimize(objective, n_trials=n_trials)
     return study
+
+def _random_positions_min_dist(N, size, min_dist, max_attempts_per_point=2000):
+    # rejection sampling: place robots one at a time, redrawing a candidate
+    # point until it's at least min_dist from every point already placed.
+    # Simple and fine for the N/size/min_dist ranges used here; if min_dist
+    # is too large for N robots to fit, raises rather than silently
+    # clumping or looping forever.
+    xs = np.empty(N)
+    ys = np.empty(N)
+    for i in range(N):
+        for _ in range(max_attempts_per_point):
+            x = np.random.uniform(size * 0.05, size * 0.95)
+            y = np.random.uniform(size * 0.05, size * 0.95)
+            if i == 0 or np.all(np.hypot(xs[:i] - x, ys[:i] - y) >= min_dist):
+                xs[i], ys[i] = x, y
+                break
+        else:
+            raise ValueError(
+                f"couldn't place robot {i + 1}/{N} with min_dist={min_dist} "
+                f"after {max_attempts_per_point} attempts - try a smaller "
+                f"min_dist, fewer robots, or a bigger arena")
+    return xs, ys
 
 #%% RUN SEARCH
 

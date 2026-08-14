@@ -14,13 +14,40 @@ DT = 0.1
 MAX_SPEED = 0.35
 
 
-def init_positions(layout, N, size):
-    # initial robot placement - 'random' (original behavior), 'grid' (evenly
-    # spaced on a square grid), or 'circle' (evenly spaced on a ring around
-    # the arena center)
+def _random_positions_min_dist(N, size, min_dist, max_attempts_per_point=2000):
+    # rejection sampling: place robots one at a time, redrawing a candidate
+    # point until it's at least min_dist from every point already placed.
+    # Simple and fine for the N/size/min_dist ranges used here; if min_dist
+    # is too large for N robots to fit, raises rather than silently
+    # clumping or looping forever.
+    xs = np.empty(N)
+    ys = np.empty(N)
+    for i in range(N):
+        for _ in range(max_attempts_per_point):
+            x = np.random.uniform(size * 0.05, size * 0.95)
+            y = np.random.uniform(size * 0.05, size * 0.95)
+            if i == 0 or np.all(np.hypot(xs[:i] - x, ys[:i] - y) >= min_dist):
+                xs[i], ys[i] = x, y
+                break
+        else:
+            raise ValueError(
+                f"couldn't place robot {i + 1}/{N} with min_dist={min_dist} "
+                f"after {max_attempts_per_point} attempts - try a smaller "
+                f"min_dist, fewer robots, or a bigger arena")
+    return xs, ys
+
+
+def init_positions(layout, N, size, min_dist=None):
+    # initial robot placement - 'random' (original behavior, or with a
+    # minimum spacing if min_dist is given), 'grid' (evenly spaced on a
+    # square grid), or 'circle' (evenly spaced on a ring around the arena
+    # center)
     if layout == 'random':
-        x0 = np.random.uniform(0, size, N)
-        y0 = np.random.uniform(0, size, N)
+        if min_dist is None:
+            x0 = np.random.uniform(0, size, N)
+            y0 = np.random.uniform(0, size, N)
+        else:
+            x0, y0 = _random_positions_min_dist(N, size, min_dist)
     elif layout == 'grid':
         n_cols = int(np.ceil(np.sqrt(N)))
         n_rows = int(np.ceil(N / n_cols))
@@ -96,6 +123,47 @@ def random_walk_oscillations(prev_x, prev_y, prev_vx, prev_vy, size, step_scale,
     return x_s, y_s, vx, vy
 
 
+def ball_pos(prev_x, prev_y, prev_vx, prev_vy, size, target_speed, speed_relax,
+             heading_noise, restitution):
+    # ball rolling around the arena, with a few "natural" touches instead of
+    # a perfect billiard bounce:
+    #   - speed relaxes toward target_speed each tick (an exponential
+    #     pull, not a spring - no overshoot/ringing risk), so bounces cost
+    #     energy without the ball ever grinding to a permanent stop over a
+    #     long run - like a slight motor/downhill push fighting friction
+    #   - heading gets a small random nudge every tick (path deviation):
+    #     the direction of travel slowly wanders instead of being ruler-
+    #     straight between bounces
+    #   - restitution < 1 loses a fraction of speed on the axis that
+    #     actually bounced (an inelastic wall collision), matching how a
+    #     real ball loses energy on impact rather than a perfect reflection
+    speed = np.hypot(prev_vx, prev_vy)
+    heading = np.arctan2(prev_vy, prev_vx) + np.random.normal(0, heading_noise)
+    speed = speed + speed_relax * (target_speed - speed)
+
+    vx = speed * np.cos(heading)
+    vy = speed * np.sin(heading)
+
+    x_s = prev_x + vx
+    y_s = prev_y + vy
+
+    if x_s < 0:
+        x_s = -x_s
+        vx = -vx * restitution
+    elif x_s > size:
+        x_s = 2 * size - x_s
+        vx = -vx * restitution
+
+    if y_s < 0:
+        y_s = -y_s
+        vy = -vy * restitution
+    elif y_s > size:
+        y_s = 2 * size - y_s
+        vy = -vy * restitution
+
+    return x_s, y_s, vx, vy
+
+
 def update_source(state, t, T):
     # advances the repulsion source and stores its new position in state -
     # random_walk needs the previous position, so this can't be a pure
@@ -116,6 +184,14 @@ def update_source(state, t, T):
                 state['source_vx'], state['source_vy'],
                 state['size'], state['source_step'], state['source_inertia'], state['source_centre_pull'])
             state['source_vx'], state['source_vy'] = vx, vy
+    elif state['source_mode'] == 'ball':
+        x_s, y_s, vx, vy = ball_pos(
+            state['source_x'], state['source_y'],
+            state['source_vx'], state['source_vy'],
+            state['size'], state['source_ball_target_speed'],
+            state['source_ball_speed_relax'], state['source_ball_heading_noise'],
+            state['source_ball_restitution'])
+        state['source_vx'], state['source_vy'] = vx, vy
     else:
         raise ValueError(f"unknown source_mode: {state['source_mode']!r}")
     state['source_x'], state['source_y'] = x_s, y_s
@@ -222,12 +298,14 @@ def step(state, t, T):
 
 #%% SETUP
 
-N = 10       # number of robots
-size = 0.1
+N = 20       # number of robots
+size = 1
 T = 70     # period of the global input signal
 
 INIT_LAYOUT = 'random'   # 'random', 'grid', or 'circle'
-x0, y0 = init_positions(INIT_LAYOUT, N, size)
+INIT_MIN_DIST = 0.1 * size   # 'random' layout only: minimum spacing between
+                              # robots' start positions (None = unconstrained)
+x0, y0 = init_positions(INIT_LAYOUT, N, size, min_dist=INIT_MIN_DIST)
 theta = np.random.uniform(0, 2*np.pi, N)  # fixed for the whole run: the real
                                            # node never publishes angular.z
 
@@ -241,12 +319,23 @@ A = np.hypot(dx0, dy0)
 # test_nmse=0.00288 on a short 20,000-step search run - that's much shorter
 # than num_iterations below, so treat this run as the confirmation check
 # before trusting the result)
-BETA_SCALE = 0.2575741508217526
-K_SCALE = 0.13674124212076125
-K_SELF_SCALE = 2.5904874601780103
-CONNECTIVITY_PROB = 0.37219226119311855
-R_GLOBAL_FRAC = 0.5819262923311888
-K_GLOBAL_SCALE = 2.233767828569402
+
+# these params give good results:
+# BETA_SCALE = 0.2575741508217526
+# K_SCALE = 0.13674124212076125
+# K_SELF_SCALE = 2.5904874601780103
+# CONNECTIVITY_PROB = 0.37219226119311855
+# R_GLOBAL_FRAC = 0.5819262923311888
+# K_GLOBAL_SCALE = 2.233767828569402
+
+BETA_SCALE = 0.28425719607665745
+K_SCALE = 0.44224548299162375
+K_SELF_SCALE = 2.940917347454856
+CONNECTIVITY_PROB = 0.9083643015865849
+R_GLOBAL_FRAC = 0.2 #0.5436806351031995
+K_GLOBAL_SCALE = 2.4573961915776006
+
+
 
 K = (7.8788 + np.random.uniform(size=(N, N)) * 5.0) * 0.3 * K_SCALE
 np.fill_diagonal(K, 0.0)
@@ -267,7 +356,7 @@ M = 1.0  # DotNode overrides M (and J) to 1 regardless of launch params
 K_GLOBAL = 50.0 * K_GLOBAL_SCALE
 R_GLOBAL = R_GLOBAL_FRAC * size
 
-SOURCE_MODE = 'random_walk_wall_avoidance'   # 'circle' or 'random_walk'
+SOURCE_MODE = 'random_walk_wall_avoidance'   # 'circle' or 'random_walk' or 'random_walk_wall_avoidance
 SOURCE_STEP = 0.5 * size    # random_walk only: velocity-innovation scale per tick
 SOURCE_INERTIA = 0.995        # random_walk only: higher = smoother/slower-turning path
 SOURCE_WALL_MARGIN = 0.2 * size   # random_walk only: distance from an edge at
@@ -277,13 +366,41 @@ SOURCE_WALL_STRENGTH = 0.09        # random_walk_wall_avoidance only: how hard i
 SOURCE_CENTER_PULL = 0.005     # random_walk only: restoring pull toward the arena
                                 # center: higher = tighter to center/fewer edge
                                 # visits, 0 = old hard-bounce-at-the-wall behavior
+SOURCE_BALL_SPEED = 0.02 * size   # 'ball' only: cruising speed it relaxes
+                                   # toward; launched in a random direction
+SOURCE_BALL_SPEED_RELAX = 0.05     # 'ball' only: how fast speed relaxes back
+                                    # toward SOURCE_BALL_SPEED each tick after
+                                    # a bounce (0 = no recovery -> can stall,
+                                    # 1 = instant, no felt energy loss)
+SOURCE_BALL_HEADING_NOISE = 0.05   # 'ball' only: per-tick random heading
+                                    # perturbation (radians) - path deviation
+SOURCE_BALL_RESTITUTION = 0.85     # 'ball' only: fraction of speed kept on
+                                    # the bounced axis at each wall collision
+                                    # (1 = perfectly elastic, old behavior)
 
 anchor = np.zeros(N, dtype=bool)
 # anchor[np.random.randint(N)] = True  # uncomment to freeze one robot in place
 
 #%% SIMULATION
 
-def simulation(show=False):
+def simulation(show=False, coord_frame='global'):
+    # coord_frame='local' stores each robot's displacement from its own
+    # starting position (x - x0, y - y0) in data_states instead of absolute
+    # arena coordinates - removes the arbitrary "where did this robot
+    # happen to start" offset, so the readout sees relative motion instead.
+    # Only affects what's stored/returned; the animation (if show=True)
+    # always uses true absolute positions, since a "local" plot wouldn't be
+    # spatially meaningful.
+    if SOURCE_MODE == 'ball':
+        # launch in a random direction - random_walk/circle modes start
+        # from rest (0,0) and pick up velocity/position on their own, but
+        # a ball with 0 initial velocity would just sit still forever
+        launch_angle = np.random.uniform(0, 2 * np.pi)
+        init_vx = SOURCE_BALL_SPEED * np.cos(launch_angle)
+        init_vy = SOURCE_BALL_SPEED * np.sin(launch_angle)
+    else:
+        init_vx, init_vy = 0.0, 0.0
+
     state = {
         'x': x0.copy(), 'y': y0.copy(), 'theta': theta, 's': np.zeros(N),
         'x0': x0, 'y0': y0, 'K': K, 'A': A, 'K_self': K_self,
@@ -294,8 +411,12 @@ def simulation(show=False):
         'source_inertia': SOURCE_INERTIA,
         'source_wall_margin': SOURCE_WALL_MARGIN,
         'source_wall_strength': SOURCE_WALL_STRENGTH,
+        'source_ball_target_speed': SOURCE_BALL_SPEED,
+        'source_ball_speed_relax': SOURCE_BALL_SPEED_RELAX,
+        'source_ball_heading_noise': SOURCE_BALL_HEADING_NOISE,
+        'source_ball_restitution': SOURCE_BALL_RESTITUTION,
         'source_x': size / 2, 'source_y': size / 2,
-        'source_vx': 0.0, 'source_vy': 0.0,
+        'source_vx': init_vx, 'source_vy': init_vy,
     }
 
     iterations = np.arange(0, num_iterations * DT, DT)
@@ -328,7 +449,16 @@ def simulation(show=False):
         if i % 10000 == 0:
             print(f"{i}/{n_steps}  (t={t:.1f})")
 
-    data = np.stack([x_coords, y_coords, theta_coords, s_array])
+    if coord_frame == 'local':
+        stored_x = x_coords - state['x0'][:, None]
+        stored_y = y_coords - state['y0'][:, None]
+    elif coord_frame == 'global':
+        stored_x = x_coords
+        stored_y = y_coords
+    else:
+        raise ValueError(f"unknown coord_frame: {coord_frame!r}")
+
+    data = np.stack([stored_x, stored_y, theta_coords, s_array])
     data_states = data.reshape(-1, data.shape[2]).T
 
     if show:
@@ -344,7 +474,11 @@ def simulation(show=False):
 def unpack_data_states(data_states, N):
     # inverse of the x/y/theta/s -> data_states packing at the end of
     # simulation(): columns are ordered state-major (state_idx*N + node_idx),
-    # so this just undoes that reshape/transpose
+    # so this just undoes that reshape/transpose. Note: if data_states was
+    # produced with coord_frame='local', the recovered x/y are per-robot
+    # displacements from their own start position, not absolute arena
+    # coordinates - replay()'s animation will look wrong (robots clustered
+    # near their local origins) unless you add state['x0']/state['y0'] back.
     T = data_states.shape[0]
     x_coords, y_coords, theta_coords, s_array = data_states.T.reshape(4, N, T)
     return x_coords, y_coords, theta_coords, s_array
@@ -364,9 +498,9 @@ def replay(data_states, source_data, N, R_global, max_frames=500, from_start=Tru
 
 T = 50
 
-num_iterations = 3000
+num_iterations = 10000
 
-data_states, ani, source_data = simulation(show=False)
+data_states, ani, source_data = simulation(show=False, coord_frame='global')
 #display(HTML(ani.to_jshtml()))
 
 #%%
@@ -381,6 +515,7 @@ plots.source_path(source_data[0][5000:10000], source_data[1][5000:10000], size=s
 #%%
 filename = 'node-simulation.npz'
 
+# [:, list(range(10)) + list(range(20, 30)) + list(range(40, 50)) + list(range(60, 70))]
 # reuse the run from RUN + ANIMATE above rather than re-simulating
 np.savez(filename, data_states=data_states,
          source_x=source_data[0], source_y=source_data[1], T=T)
@@ -415,5 +550,16 @@ prediction_train, prediction_test = predictions
 
 data_processing.plot_predictions(y_test, prediction_test)
 data_processing.plot_trajectory_2d(y_test, prediction_test, size=size)
+
+# %% output weightings for linear readout
+
+plots.weight_heatmap(lr, x0, y0, size=size)
+
+data_processing.plot_weight_matrix(lr)
+
+# %%
+
+ani = data_processing.animate_trajectory_2d(y_test, prediction_test, size=size)
+display(HTML(ani.to_jshtml()))
 
 # %%

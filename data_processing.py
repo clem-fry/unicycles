@@ -1,6 +1,7 @@
 #%%
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
@@ -107,14 +108,27 @@ def add_lag(data_states, lag):
     return np.concatenate([data_states, delayed], axis=1)
 
 
+def add_lag_history(data_states, lag):
+    # like add_lag, but appends every lag from 1 up to `lag` (a full tapped
+    # delay line) instead of just the single `lag`-step-back snapshot - the
+    # readout gets the whole recent history as training features, not one
+    # point from the past. More features (lag x as many), so more capacity
+    # but also more overfitting risk than add_lag for the same lag value.
+    if lag == 0:
+        return data_states
+    n, d = data_states.shape
+    delayed_blocks = [np.vstack([np.zeros((l, d)), data_states[:-l]]) for l in range(1, lag + 1)]
+    return np.concatenate([data_states] + delayed_blocks, axis=1)
 
-def calc_nmse(y_array, lag=0, plot=False):
+
+
+def calc_nmse(y_array, lag=0, cumulative=False, plot=False):
     # fits the swarm's recorded states to the moving repulsion source's own
     # position - i.e. can the reservoir decode where the stimulus currently is
     simulation_data = np.load('node-simulation.npz')
     data_states = simulation_data['data_states']
 
-    data_states = add_lag(data_states, lag)
+    data_states = add_lag_history(data_states, lag) if cumulative else add_lag(data_states, lag)
 
     cut = int(np.shape(data_states)[0] * 0.1) # cut first 10 percent
     X = data_states[cut:, :]
@@ -139,7 +153,7 @@ def calc_nmse(y_array, lag=0, plot=False):
     X_test_transformed = scaler.transform(X_test)
 
     #lr = LinearRegression()
-    lr = Ridge(alpha=10)
+    lr = Ridge(alpha=0.1)
 
     lr.fit(X_train_transformed, y_train)
 
@@ -210,6 +224,51 @@ def plot_trajectory_2d(y, prediction, size=None):
     ax.legend()
     plt.show()
 
+
+def animate_trajectory_2d(y, prediction, size=None, max_frames=500, trail_length=50):
+    # animated version of plot_trajectory_2d: actual and predicted source
+    # markers moving together over time, each with a short trailing path so
+    # you can see them converge/diverge as prediction quality varies.
+    # Returns the animation object - display with
+    # display(HTML(ani.to_jshtml())) same as plots.animation.
+    n_steps = y.shape[0]
+    frame_idx = np.linspace(0, n_steps - 1, min(max_frames, n_steps)).astype(int)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    if size is not None:
+        ax.set_xlim(0, size)
+        ax.set_ylim(0, size)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_title("Actual vs predicted source trajectory")
+    ax.set_aspect("equal")
+
+    actual_trail, = ax.plot([], [], color="tab:blue", alpha=0.4, linewidth=1.5)
+    pred_trail, = ax.plot([], [], color="tab:orange", alpha=0.4, linewidth=1.5, linestyle="--")
+    actual_point, = ax.plot([], [], "o", color="tab:blue", markersize=10, label="actual")
+    pred_point, = ax.plot([], [], "o", color="tab:orange", markersize=10, label="predicted")
+    ax.legend()
+
+    def init():
+        actual_trail.set_data([], [])
+        pred_trail.set_data([], [])
+        actual_point.set_data([], [])
+        pred_point.set_data([], [])
+        return actual_trail, pred_trail, actual_point, pred_point
+
+    def update(i):
+        frame = frame_idx[i]
+        start = max(0, frame - trail_length)
+        actual_trail.set_data(y[start:frame + 1, 0], y[start:frame + 1, 1])
+        pred_trail.set_data(prediction[start:frame + 1, 0], prediction[start:frame + 1, 1])
+        actual_point.set_data([y[frame, 0]], [y[frame, 1]])
+        pred_point.set_data([prediction[frame, 0]], [prediction[frame, 1]])
+        return actual_trail, pred_trail, actual_point, pred_point
+
+    ani = FuncAnimation(fig, update, frames=len(frame_idx), init_func=init,
+                         blit=False, interval=100, repeat=True)
+    return ani
+
 # %%
 
 #lr, train_nmse, test_nmse = calc_nmse(source_data)
@@ -249,6 +308,38 @@ def plot_coefficients(lr):
         ax.set_xlabel("State")
         ax.set_ylabel("Node")
 
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_weight_matrix(lr):
+    # the raw readout weight matrix in one shot: rows are the predicted
+    # output positions (source_x, source_y), columns are every input
+    # feature (each robot's x/y/theta/s) - unlike plot_coefficients, which
+    # reshapes each target into a separate Node x State grid, this keeps
+    # every feature as its own column for an at-a-glance view of the whole
+    # readout
+    import seaborn as sns  # if not installed: pip install seaborn
+    import pandas as pd
+
+    n_states = len(STATE_NAMES)
+    coef_rows = np.atleast_2d(lr.coef_)  # (n_targets, n_features)
+    n_features = coef_rows.shape[-1]
+    n_nodes = n_features // n_states
+    target_names = ["source_x", "source_y"][:coef_rows.shape[0]]
+
+    # feature order matches data_states' state-major packing in
+    # global-sim-person.py: state_idx * n_nodes + node_idx
+    feature_labels = [f"{state}_{node + 1}" for state in STATE_NAMES for node in range(n_nodes)]
+
+    weight_df = pd.DataFrame(coef_rows, index=target_names, columns=feature_labels)
+
+    plt.figure(figsize=(max(10, n_features * 0.3), 1.5 * len(target_names) + 1))
+    sns.heatmap(weight_df, cmap="coolwarm", center=0, cbar_kws={"label": "weight"})
+    plt.title("Readout weight matrix (output position x input feature)")
+    plt.xlabel("Input feature (state_node)")
+    plt.ylabel("Output position")
+    plt.xticks(rotation=90)
     plt.tight_layout()
     plt.show()
 # %%
