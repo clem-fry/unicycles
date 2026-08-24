@@ -122,10 +122,18 @@ def add_lag_history(data_states, lag):
 
 
 
-def calc_nmse(y_array, lag=0, cumulative=False, plot=False):
+def calc_nmse(y_array, lag=0, cumulative=False, plot=False, alpha=None, filename='node-simulation.npz',
+              alpha_candidates=(0.1, 1.0, 10.0, 100.0, 300.0, 1000.0, 3000.0), alpha_holdout_frac=0.2):
     # fits the swarm's recorded states to the moving repulsion source's own
     # position - i.e. can the reservoir decode where the stimulus currently is
-    simulation_data = np.load('node-simulation.npz')
+    #
+    # alpha=None (default) auto-picks Ridge's alpha instead of using a fixed
+    # value: it's swept over alpha_candidates, scored on a holdout carved out
+    # of the *training* split only (the last alpha_holdout_frac of it) -
+    # never X_test - so the reported test_nmse below isn't contaminated by
+    # having picked alpha to do well on that same test data. Pass a number
+    # to skip all that and use it directly, same as before.
+    simulation_data = np.load(filename)
     data_states = simulation_data['data_states']
 
     data_states = add_lag_history(data_states, lag) if cumulative else add_lag(data_states, lag)
@@ -148,12 +156,31 @@ def calc_nmse(y_array, lag=0, cumulative=False, plot=False):
     print("The dimension of y_train is {}".format(len(y_train)))
     print("The dimension of y_test is {}".format(len(y_test)))
 
+    def nmse(y_true, y_pred):
+        # y_true/y_pred are (n_samples, 2) for [x_s, y_s]; normalize per
+        # target column before combining, so x and y are weighted equally
+        return np.mean((y_true - y_pred)**2) / np.mean((y_true - np.mean(y_true, axis=0))**2)
+
     scaler = StandardScaler() # weight all state elements the same
     X_train_transformed = scaler.fit_transform(X_train)
     X_test_transformed = scaler.transform(X_test)
 
+    if alpha is None:
+        holdout_start = int(X_train_transformed.shape[0] * (1 - alpha_holdout_frac))
+        X_fit, X_holdout = X_train_transformed[:holdout_start], X_train_transformed[holdout_start:]
+        y_fit, y_holdout = y_train[:holdout_start], y_train[holdout_start:]
+        best_alpha, best_holdout_nmse = None, None
+        for a in alpha_candidates:
+            lr_try = Ridge(alpha=a)
+            lr_try.fit(X_fit, y_fit)
+            h_nmse = nmse(y_holdout, lr_try.predict(X_holdout))
+            if best_holdout_nmse is None or h_nmse < best_holdout_nmse:
+                best_alpha, best_holdout_nmse = a, h_nmse
+        print(f"auto-selected alpha={best_alpha} (holdout NMSE {best_holdout_nmse:.6f})")
+        alpha = best_alpha
+
     #lr = LinearRegression()
-    lr = Ridge(alpha=0.1)
+    lr = Ridge(alpha=alpha)
 
     lr.fit(X_train_transformed, y_train)
 
@@ -165,11 +192,6 @@ def calc_nmse(y_array, lag=0, cumulative=False, plot=False):
 
     print("The train score for lr model is {}".format(train_score_lr))
     print("The test score for lr model is {}".format(test_score_lr))
-
-    def nmse(y_true, y_pred):
-        # y_true/y_pred are (n_samples, 2) for [x_s, y_s]; normalize per
-        # target column before combining, so x and y are weighted equally
-        return np.mean((y_true - y_pred)**2) / np.mean((y_true - np.mean(y_true, axis=0))**2)
 
     train_nmse = nmse(y_train, prediction_train)
     test_nmse  = nmse(y_test, prediction_test)
@@ -186,6 +208,143 @@ def calc_nmse(y_array, lag=0, cumulative=False, plot=False):
     predictions = [prediction_train, prediction_test]
 
     return lr, nmses, ys, Xs, predictions
+
+
+def calc_nmse_transfer(y_array, walker_active, filename='node-simulation.npz', lag=0, cumulative=False,
+                        plot=False, alphas=(0.1, 1.0, 10.0, 100.0, 300.0, 1000.0), alpha_holdout_frac=0.2,
+                        transient_window=100):
+    # Answers "if I train a readout while the walker's present, remove it,
+    # let the swarm settle, then bring it back, can that same readout still
+    # track the walker with no further fitting?" walker_active is the
+    # per-tick bool array global-sim-local-sensors.py's simulation(...,
+    # walker_active_mask=...) returns/saves (True = robots can sense the
+    # walker that tick) - used here only to find the phase boundaries, not
+    # as a feature.
+    #
+    # Three phases come out of walker_active's first False->True->False
+    # transition-pair:
+    #   - trainable: [warmup_cut, first_removed) - walker present, used to
+    #     fit the readout (with an internal holdout for picking alpha - see
+    #     below)
+    #   - removed: [first_removed, reintroduced) - walker absent, skipped
+    #     entirely. The robots have no information about the walker while
+    #     it's gone, so scoring predictions there wouldn't measure anything
+    #     meaningful.
+    #   - transfer: [reintroduced, end) - walker back, scored using the
+    #     readout fit on the trainable phase ONLY - no refitting here, since
+    #     that's the entire point of the test.
+    #
+    # alpha is picked by holding out the last alpha_holdout_frac of the
+    # *trainable* phase, never any transfer-phase data - using transfer
+    # samples to choose alpha would leak information about the segment
+    # we're claiming not to have trained on, making the reported
+    # transfer_nmse optimistic.
+    #
+    # transfer_nmse is also split into a transient_window-sample "transient"
+    # right at reintroduction and a "steady" remainder, scored separately.
+    # The trainable phase itself starts the same way (swarm at rest at
+    # x0/y0 before the walker's done anything), but that configuration is a
+    # small fraction of a long trainable phase once the walker gets going -
+    # so this checks how much of the overall transfer gap is just the
+    # readout being unfamiliar with that brief at-rest moment, versus a
+    # genuine steady-state tracking cost after the swarm's back in motion.
+    simulation_data = np.load(filename)
+    data_states = simulation_data['data_states']
+    walker_active = np.asarray(walker_active, dtype=bool)
+
+    data_states = add_lag_history(data_states, lag) if cumulative else add_lag(data_states, lag)
+    y = np.array(y_array).T  # (n, 2): columns [x_s, y_s]
+
+    inactive_idx = np.flatnonzero(~walker_active)
+    if inactive_idx.size == 0:
+        raise ValueError("walker_active never goes False - nothing was removed")
+    first_removed = inactive_idx[0]
+    active_after = np.flatnonzero(walker_active[first_removed:])
+    if active_after.size == 0:
+        raise ValueError("walker never comes back after removal - nothing to transfer-test on")
+    reintroduced = first_removed + active_after[0]
+
+    cut = int(data_states.shape[0] * 0.1)  # same warm-up cut as calc_nmse
+    train_start = min(cut, first_removed)
+
+    X_train_full = data_states[train_start:first_removed]
+    y_train_full = y[train_start:first_removed]
+    X_transfer = data_states[reintroduced:]
+    y_transfer = y[reintroduced:]
+
+    print(f"trainable phase: samples [{train_start}, {first_removed})  -> {X_train_full.shape[0]} samples")
+    print(f"removed phase:   samples [{first_removed}, {reintroduced}) -> {reintroduced - first_removed} samples (unused)")
+    print(f"transfer phase:  samples [{reintroduced}, {data_states.shape[0]}) -> {X_transfer.shape[0]} samples")
+
+    def nmse(y_true, y_pred):
+        return np.mean((y_true - y_pred) ** 2) / np.mean((y_true - np.mean(y_true, axis=0)) ** 2)
+
+    holdout_start = int(X_train_full.shape[0] * (1 - alpha_holdout_frac))
+    X_fit, X_holdout = X_train_full[:holdout_start], X_train_full[holdout_start:]
+    y_fit, y_holdout = y_train_full[:holdout_start], y_train_full[holdout_start:]
+
+    scaler = StandardScaler()
+    X_fit_t = scaler.fit_transform(X_fit)
+    X_holdout_t = scaler.transform(X_holdout)
+
+    best_alpha, best_holdout_nmse = None, None
+    for a in alphas:
+        lr = Ridge(alpha=a)
+        lr.fit(X_fit_t, y_fit)
+        h_nmse = nmse(y_holdout, lr.predict(X_holdout_t))
+        if best_holdout_nmse is None or h_nmse < best_holdout_nmse:
+            best_alpha, best_holdout_nmse = a, h_nmse
+    print(f"alpha selected via trainable-phase holdout: {best_alpha} (holdout NMSE {best_holdout_nmse:.6f})")
+
+    # refit at the chosen alpha on the full trainable phase (fit + holdout
+    # slice together) - this is the readout that goes untouched into the
+    # transfer phase, no further fitting past this point
+    scaler = StandardScaler()
+    X_train_t = scaler.fit_transform(X_train_full)
+    X_transfer_t = scaler.transform(X_transfer)
+
+    lr = Ridge(alpha=best_alpha)
+    lr.fit(X_train_t, y_train_full)
+
+    prediction_train = lr.predict(X_train_t)
+    prediction_transfer = lr.predict(X_transfer_t)
+
+    train_nmse = nmse(y_train_full, prediction_train)
+    transfer_nmse = nmse(y_transfer, prediction_transfer)
+
+    # transient (first transient_window samples right after reintroduction)
+    # vs steady (the rest) - see docstring. transient_nmse/steady_nmse are
+    # None if the transfer phase is too short to split meaningfully.
+    window = min(transient_window, X_transfer.shape[0])
+    y_transient, pred_transient = y_transfer[:window], prediction_transfer[:window]
+    y_steady, pred_steady = y_transfer[window:], prediction_transfer[window:]
+    transient_nmse = nmse(y_transient, pred_transient) if window > 0 else None
+    steady_nmse = nmse(y_steady, pred_steady) if y_steady.shape[0] > 0 else None
+
+    print(f"Train NMSE (trainable phase, in-sample):                  {train_nmse:.6f}")
+    print(f"Transfer NMSE (post-reintroduction, no further training): {transfer_nmse:.6f}")
+    if transient_nmse is not None:
+        print(f"  - transient (first {window} samples after reintroduction): {transient_nmse:.6f}")
+    else:
+        print("  - transient: n/a (transfer phase too short)")
+    if steady_nmse is not None:
+        print(f"  - steady (remaining {y_steady.shape[0]} samples):         {steady_nmse:.6f}")
+    else:
+        print("  - steady: n/a (transfer phase too short)")
+
+    if plot:
+        plot_predictions(y_transfer, prediction_transfer)
+
+    return {
+        'transient_nmse': transient_nmse, 'steady_nmse': steady_nmse,
+        'y_transient': y_transient, 'prediction_transient': pred_transient,
+        'y_steady': y_steady, 'prediction_steady': pred_steady,
+        'alpha': best_alpha, 'train_nmse': train_nmse, 'transfer_nmse': transfer_nmse,
+        'first_removed': first_removed, 'reintroduced': reintroduced,
+        'lr': lr, 'y_train': y_train_full, 'y_transfer': y_transfer,
+        'prediction_train': prediction_train, 'prediction_transfer': prediction_transfer,
+    }
+
 
 def plot_predictions(y_test, prediction_test):
     target_names = ["source_x", "source_y"]

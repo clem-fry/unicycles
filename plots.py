@@ -43,7 +43,8 @@ from matplotlib.animation import FuncAnimation
 
 # %% PLOTTING
 
-def animation(x_coords, z_coords, theta_coords, source_x=None, source_y=None, source_radius=None, max_frames=500, from_start=True):
+def animation(x_coords, z_coords, theta_coords, source_x=None, source_y=None, source_radius=None,
+              robot_radius=None, max_frames=500, from_start=True):
     N = np.shape(x_coords)[0]
     total_steps = np.shape(x_coords)[1]
     n_frames = min(max_frames, total_steps)
@@ -73,6 +74,18 @@ def animation(x_coords, z_coords, theta_coords, source_x=None, source_y=None, so
     # Create scatter-like markers (each node as a dot)
     points = [ax.plot([], [], "o", label=f"Node {i}")[0] for i in range(N)]
 
+    # optional outline showing each robot's actual physical footprint
+    # (resolve_hard_collisions' hard collision radius) - the "o" marker
+    # above is a fixed pixel size regardless of zoom/arena scale, so it
+    # doesn't represent robot_radius at all
+    robot_circles = None
+    if robot_radius is not None:
+        robot_circles = [plt.Circle((0, 0), robot_radius, color=points[i].get_color(),
+                                     fill=False, alpha=0.5)
+                          for i in range(N)]
+        for c in robot_circles:
+            ax.add_patch(c)
+
     quiver = ax.quiver([0]*N, [0]*N, [0]*N, [0]*N,
                     angles='xy', scale_units='xy', scale=1, color='r')
 
@@ -98,6 +111,10 @@ def animation(x_coords, z_coords, theta_coords, source_x=None, source_y=None, so
         quiver.set_offsets(np.zeros((N, 2)))
 
         artists = points + [quiver]
+        if robot_circles is not None:
+            for c in robot_circles:
+                c.set_center((0, 0))
+            artists += robot_circles
         if source_point is not None:
             source_point.set_data([], [])
             artists.append(source_point)
@@ -122,6 +139,10 @@ def animation(x_coords, z_coords, theta_coords, source_x=None, source_y=None, so
         quiver.set_UVC(U, V)
 
         artists = points + [quiver]
+        if robot_circles is not None:
+            for j, c in enumerate(robot_circles):
+                c.set_center((x_coords[j][frame], z_coords[j][frame]))
+            artists += robot_circles
         if source_point is not None:
             source_point.set_data([source_x[frame]], [source_y[frame]])
             artists.append(source_point)
