@@ -25,8 +25,11 @@
 #     robot then gets its own K, scaled off this central value by
 #     ROBOT_PARAM_SPREAD (see below) - not searched per-robot, just the
 #     shared centre they're spread around
-#   - source_step - random_walk_wall_avoidance source's per-tick velocity
-#     innovation scale
+#   - the source's "how energetic" knob, depending on SOURCE_MODE (see
+#     that constant's own comment): source_ball_speed_frac (ball's cruising
+#     speed, as a fraction of arena size) or source_step
+#     (random_walk_wall_avoidance's per-tick velocity innovation scale) -
+#     only one of the two is ever in SEARCH_RANGES/state at a time
 #   - Ridge alpha - free to tune per trial (no resimulation needed), same
 #     as param_optimisation.py
 #
@@ -81,9 +84,9 @@
 # duplicated rather than imported - that file's name has a hyphen so it
 # isn't a valid Python module, and it's written as a notebook-style script
 # (#%% cells, an IPython display() call) that isn't safe to import anyway.
-# Only the random_walk_wall_avoidance source (the mode currently active
-# there) is reproduced; circle/random_walk_oscillations/ball aren't part
-# of this search.
+# Only random_walk_wall_avoidance and ball are reproduced (SOURCE_MODE
+# below picks which); circle/random_walk_oscillations aren't part of this
+# search.
 
 import numpy as np
 from numba import njit  # if not installed: pip install numba
@@ -119,29 +122,73 @@ def random_walk_wall_avoidance(prev_x, prev_y, prev_vx, prev_vy, size, step_scal
     return x_s, y_s, vx, vy
 
 
+def ball_pos(prev_x, prev_y, prev_vx, prev_vy, size, target_speed, speed_relax,
+             heading_noise, restitution, rng):
+    # mirrors global-sim-local-sensors.py's ball_pos exactly, just taking an
+    # explicit rng (rng.normal in place of np.random.normal) for the same
+    # per-trial-reproducible-from-seed reason random_walk_wall_avoidance
+    # above does
+    speed = np.hypot(prev_vx, prev_vy)
+    heading = np.arctan2(prev_vy, prev_vx) + rng.normal(0, heading_noise)
+    speed = speed + speed_relax * (target_speed - speed)
+
+    vx = speed * np.cos(heading)
+    vy = speed * np.sin(heading)
+
+    x_s = prev_x + vx
+    y_s = prev_y + vy
+
+    if x_s < 0:
+        x_s = -x_s
+        vx = -vx * restitution
+    elif x_s > size:
+        x_s = 2 * size - x_s
+        vx = -vx * restitution
+
+    if y_s < 0:
+        y_s = -y_s
+        vy = -vy * restitution
+    elif y_s > size:
+        y_s = 2 * size - y_s
+        vy = -vy * restitution
+
+    return x_s, y_s, vx, vy
+
+
 @njit(cache=True)
-def local_repulsion(x, y, x_s, y_s, K, R):
-    # linear (Hookean), repulsion-only - see module docstring. K is a
-    # per-robot array
+def local_repulsion(x, y, vx, vy, x_s, y_s, vx_s, vy_s, K, R, tau):
+    # linear (Hookean), repulsion-only - see module docstring. K/tau[i] are
+    # per-robot arrays. R is extended by tau[i]*closing_rate while the gap
+    # to the source is shrinking (closing_rate = -d(distance)/dt > 0) - a
+    # looming/time-to-collision cue, mirroring global-sim-local-sensors.py's
+    # proximity_repulsion (see its docstring) - previously missing here
+    # entirely (tau=0 always, i.e. no anticipation, robots only ever
+    # reacted to plain static distance).
     N = x.shape[0]
     fx = np.zeros(N)
     fy = np.zeros(N)
     for i in range(N):
         dx = x[i] - x_s
         dy = y[i] - y_s
+        dvx = vx[i] - vx_s
+        dvy = vy[i] - vy_s
         d = (dx * dx + dy * dy) ** 0.5
         d_safe = max(d, 1e-3)
-        if d < R:
-            mag = K[i] * (R - d) / d_safe
+        closing_rate = -(dx * dvx + dy * dvy) / d_safe
+        R_eff = R + tau[i] * max(closing_rate, 0.0)
+        if d < R_eff:
+            mag = K[i] * (R_eff - d) / d_safe
             fx[i] = mag * dx
             fy[i] = mag * dy
     return fx, fy
 
 
 @njit(cache=True)
-def local_neighbor_repulsion(x, y, K_local, R_local):
-    # linear (Hookean), repulsion-only - see module docstring. K_local[i] is
-    # a per-robot array
+def local_neighbor_repulsion(x, y, vx, vy, K_local, R_local, tau):
+    # linear (Hookean), repulsion-only - see module docstring. K_local[i]/
+    # tau[i] are per-robot arrays. Same closing-rate R extension as
+    # local_repulsion above, against neighbouring robots instead of the
+    # source - see its docstring.
     N = x.shape[0]
     sum_x = np.zeros(N)
     sum_y = np.zeros(N)
@@ -151,37 +198,47 @@ def local_neighbor_repulsion(x, y, K_local, R_local):
                 continue
             dx = x[i] - x[j]
             dy = y[i] - y[j]
+            dvx = vx[i] - vx[j]
+            dvy = vy[i] - vy[j]
             d = (dx * dx + dy * dy) ** 0.5
             d_safe = max(d, 1e-3)
-            if d < R_local:
-                mag = K_local[i] * (R_local - d) / d_safe
+            closing_rate = -(dx * dvx + dy * dvy) / d_safe
+            R_eff = R_local + tau[i] * max(closing_rate, 0.0)
+            if d < R_eff:
+                mag = K_local[i] * (R_eff - d) / d_safe
                 sum_x[i] += mag * dx
                 sum_y[i] += mag * dy
     return sum_x, sum_y
 
 
 @njit(cache=True)
-def wall_repulsion(x, y, size, K_wall, R_wall):
+def wall_repulsion(x, y, vx, vy, size, K_wall, R_wall, tau):
     # linear (Hookean), repulsion-only - same law as local_repulsion/
-    # local_neighbor_repulsion, see module docstring. K_wall[i] is a
-    # per-robot array; the push direction is fixed (+/-x or +/-y) so, unlike
-    # those two, there's no distance vector to normalize.
+    # local_neighbor_repulsion, see module docstring. K_wall[i]/tau[i] are
+    # per-robot arrays; the push direction is fixed (+/-x or +/-y) so,
+    # unlike those two, there's no distance vector to normalize, and the
+    # closing rate is just -vx[i]/+vx[i] (or the y equivalent) since a wall
+    # never moves.
     N = x.shape[0]
     fx = np.zeros(N)
     fy = np.zeros(N)
     for i in range(N):
         d = x[i]
-        if d < R_wall:
-            fx[i] += K_wall[i] * (R_wall - d)
+        R_eff = R_wall + tau[i] * max(-vx[i], 0.0)
+        if d < R_eff:
+            fx[i] += K_wall[i] * (R_eff - d)
         d = size - x[i]
-        if d < R_wall:
-            fx[i] -= K_wall[i] * (R_wall - d)
+        R_eff = R_wall + tau[i] * max(vx[i], 0.0)
+        if d < R_eff:
+            fx[i] -= K_wall[i] * (R_eff - d)
         d = y[i]
-        if d < R_wall:
-            fy[i] += K_wall[i] * (R_wall - d)
+        R_eff = R_wall + tau[i] * max(-vy[i], 0.0)
+        if d < R_eff:
+            fy[i] += K_wall[i] * (R_eff - d)
         d = size - y[i]
-        if d < R_wall:
-            fy[i] -= K_wall[i] * (R_wall - d)
+        R_eff = R_wall + tau[i] * max(vy[i], 0.0)
+        if d < R_eff:
+            fy[i] -= K_wall[i] * (R_eff - d)
     return fx, fy
 
 
@@ -262,13 +319,13 @@ def home_spring(x, y, x0, y0, K_self):
 @njit(cache=True)
 def _step_core(x, y, theta, vx, vy, x0, y0, K_local, R_local,
                K_self, BETA, M, anchor,
-               x_s, y_s, K_global, R_global, size, K_wall, R_wall,
+               x_s, y_s, vx_s, vy_s, K_global, R_global, size, K_wall, R_wall, tau,
                robot_radius, dt, max_speed):
     N = x.shape[0]
-    Nx, Ny = local_neighbor_repulsion(x, y, K_local, R_local)
+    Nx, Ny = local_neighbor_repulsion(x, y, vx, vy, K_local, R_local, tau)
     Hx, Hy = home_spring(x, y, x0, y0, K_self)
-    Gx, Gy = local_repulsion(x, y, x_s, y_s, K_global, R_global)
-    Wx, Wy = wall_repulsion(x, y, size, K_wall, R_wall)
+    Gx, Gy = local_repulsion(x, y, vx, vy, x_s, y_s, vx_s, vy_s, K_global, R_global, tau)
+    Wx, Wy = wall_repulsion(x, y, vx, vy, size, K_wall, R_wall, tau)
 
     Fx = Nx + Hx + Gx + Wx
     Fy = Ny + Hy + Gy + Wy
@@ -334,11 +391,20 @@ def _step_core(x, y, theta, vx, vy, x0, y0, K_local, R_local,
 
 
 def step(state, t, rng):
-    x_s, y_s, src_vx, src_vy = random_walk_wall_avoidance(
-        state['source_x'], state['source_y'],
-        state['source_vx'], state['source_vy'],
-        state['size'], state['source_step'], state['source_inertia'],
-        state['source_wall_margin'], state['source_wall_strength'], rng)
+    if state['source_mode'] == 'ball':
+        x_s, y_s, src_vx, src_vy = ball_pos(
+            state['source_x'], state['source_y'],
+            state['source_vx'], state['source_vy'],
+            state['size'], state['source_ball_target_speed'], state['source_ball_speed_relax'],
+            state['source_ball_heading_noise'], state['source_ball_restitution'], rng)
+    elif state['source_mode'] == 'random_walk_wall_avoidance':
+        x_s, y_s, src_vx, src_vy = random_walk_wall_avoidance(
+            state['source_x'], state['source_y'],
+            state['source_vx'], state['source_vy'],
+            state['size'], state['source_step'], state['source_inertia'],
+            state['source_wall_margin'], state['source_wall_strength'], rng)
+    else:
+        raise ValueError(f"unknown source_mode: {state['source_mode']!r}")
     state['source_vx'], state['source_vy'] = src_vx, src_vy
     state['source_x'], state['source_y'] = x_s, y_s
 
@@ -346,8 +412,8 @@ def step(state, t, rng):
         state['x'], state['y'], state['theta'], state['vx'], state['vy'],
         state['x0'], state['y0'], state['K_local'], state['R_local'],
         state['K_self'], state['BETA'], state['M'], state['anchor'],
-        x_s, y_s, state['K_global'], state['R_global'],
-        state['size'], state['K_wall'], state['R_wall'],
+        x_s, y_s, state['source_vx'], state['source_vy'], state['K_global'], state['R_global'],
+        state['size'], state['K_wall'], state['R_wall'], state['tau'],
         state['robot_radius'], DT, MAX_SPEED)
     state['x'] = x_new
     state['y'] = y_new
@@ -394,10 +460,29 @@ INIT_MIN_DIST = 0.1 * SIZE
 BASE_K_SELF_LOW, BASE_K_SELF_HIGH = 2.36364, 3.86364
 BASE_AVOID_K = 6.0
 
+# which source model the search runs against - mirrors global-sim-local-
+# sensors.py's own SOURCE_MODE (currently 'ball' there too). 'ball' rolls
+# around bouncing off walls (ball_pos); 'random_walk_wall_avoidance' drifts
+# freely and gets nudged back near an edge (random_walk_wall_avoidance) -
+# only these two are implemented here, matching whichever's actually active
+# in global-sim-local-sensors.py at the time.
+SOURCE_MODE = 'ball'
+
 SOURCE_STEP = 0.5 * SIZE
 SOURCE_INERTIA = 0.995
 SOURCE_WALL_MARGIN = 0.2 * SIZE
 SOURCE_WALL_STRENGTH = 0.09
+
+# 'ball' only - speed_relax/heading_noise/restitution fixed at global-sim-
+# local-sensors.py's current values rather than searched (same "one
+# primary knob searched, the rest fixed" pattern as source_step/
+# SOURCE_WALL_MARGIN/SOURCE_WALL_STRENGTH for random_walk_wall_avoidance
+# above) - source_ball_speed_frac (searched, see SEARCH_RANGES) is the
+# "how energetic" knob for this mode, analogous to source_step's role
+# there.
+SOURCE_BALL_SPEED_RELAX = 0.05
+SOURCE_BALL_HEADING_NOISE = 0.05
+SOURCE_BALL_RESTITUTION = 0.85
 
 # physical robot size (see resolve_hard_collisions) - fixed, not searched;
 # same value as global-sim-local-sensors.py's ROBOT_RADIUS
@@ -417,20 +502,33 @@ ROBOT_PARAM_SPREAD = 0.5
 # module docstring) - all three now purely linear, so there's no
 # steepness/lam knob left to search; k_self_scale scales home_spring's
 # strength (see BASE_K_SELF_LOW/HIGH above and the module docstring) - 0.0
-# lets the search switch it off entirely if that's still what's best.
+# lets the search switch it off entirely if that's still what's best;
+# loom_tau scales the closing-rate/looming lookahead shared by
+# local_repulsion/local_neighbor_repulsion/wall_repulsion (see their
+# docstrings) - how far ahead (in simulated time) a robot "leads" something
+# that's closing in fast, extending its effective sensing radius by
+# tau*closing_rate. 0.0 reproduces the old no-anticipation behaviour (every
+# robot only ever reacts to plain static distance) if that's still best.
 SEARCH_RANGES = {
-    'beta_low':             (0.1, 10.0),
-    'beta_high':            (1.0, 30.0),
-    'avoid_k_scale':        (0.1, 5.0),
-    'avoid_r_frac':         (0.05, 0.2),
-    'source_step':          (0.1 * SIZE, 0.5 * SIZE),
-    'k_self_scale':         (0.0, 0.0),
+    'beta_low':             (0.1, 30.0),
+    'beta_high':            (1.0, 80.0),
+    'avoid_k_scale':        (0.1, 10.0),
+    #'avoid_r_frac':         (0.05, 0.2),
+    'k_self_scale':         (0.0, 5.0),
+    'loom_tau':             (0.0, 2.0),
 }
+if SOURCE_MODE == 'ball':
+    # cruising speed the ball relaxes toward, as a fraction of the arena
+    # size - centred on global-sim-local-sensors.py's current
+    # SOURCE_BALL_SPEED (0.02*size) but with room either side
+    SEARCH_RANGES['source_ball_speed_frac'] = (0.005, 0.08)
+elif SOURCE_MODE == 'random_walk_wall_avoidance':
+    SEARCH_RANGES['source_step'] = (0.05 * SIZE, 0.5 * SIZE)
 
 ALPHA_CANDIDATES = [0.1, 1.0, 10.0, 100.0, 200.0]
 
-N_TRIALS = 400
-N_STARTUP_TRIALS = 60  # trials drawn uniformly at random before TPE starts
+N_TRIALS = 500
+N_STARTUP_TRIALS = 250  # trials drawn uniformly at random before TPE starts
                         # exploiting the accumulating history. This landscape
                         # is more multimodal than it looks: with the default
                         # (10), TPE consistently locked onto a mediocre small
@@ -446,6 +544,7 @@ SEARCH_ITERATIONS = 20000  # short relative to the production run in
 #%% TRIAL MACHINERY
 
 def build_state(params, seed):
+    params['avoid_r_frac'] = 0.25
     rng = np.random.RandomState(seed)
 
     x0, y0 = _random_positions_min_dist(N, SIZE, INIT_MIN_DIST, rng)
@@ -466,24 +565,48 @@ def build_state(params, seed):
     avoid_R = params['avoid_r_frac'] * SIZE
 
     K_per_robot = avoid_K * rng.uniform(1 - ROBOT_PARAM_SPREAD, 1 + ROBOT_PARAM_SPREAD, N)
+    # same per-robot spread as K, shared across local_repulsion/
+    # local_neighbor_repulsion/wall_repulsion (one TAU, mirroring how K/R
+    # are already shared) - see SEARCH_RANGES' loom_tau comment
+    tau_per_robot = params['loom_tau'] * rng.uniform(1 - ROBOT_PARAM_SPREAD, 1 + ROBOT_PARAM_SPREAD, N)
 
     K_local = K_global = K_wall = K_per_robot
     R_local = R_global = R_wall = avoid_R
 
-    source_step = params['source_step']
-
-    return {
+    state = {
         'x': x0.copy(), 'y': y0.copy(), 'theta': theta,
         'vx': np.zeros(N), 'vy': np.zeros(N),
         'x0': x0, 'y0': y0, 'K_local': K_local, 'R_local': R_local,
         'K_self': K_self, 'BETA': BETA, 'M': M, 'anchor': ANCHOR,
         'size': SIZE, 'K_global': K_global, 'R_global': R_global,
-        'K_wall': K_wall, 'R_wall': R_wall, 'robot_radius': ROBOT_RADIUS,
-        'source_step': source_step, 'source_inertia': SOURCE_INERTIA,
-        'source_wall_margin': SOURCE_WALL_MARGIN, 'source_wall_strength': SOURCE_WALL_STRENGTH,
+        'K_wall': K_wall, 'R_wall': R_wall, 'tau': tau_per_robot, 'robot_radius': ROBOT_RADIUS,
+        'source_mode': SOURCE_MODE,
         'source_x': SIZE / 2, 'source_y': SIZE / 2,
-        'source_vx': 0.0, 'source_vy': 0.0,
-    }, rng
+    }
+
+    if SOURCE_MODE == 'ball':
+        # launch in a random direction - starting from rest would just sit
+        # still forever, since ball_pos's speed_relax pulls speed toward
+        # target_speed multiplicatively off whatever speed it already has
+        target_speed = params['source_ball_speed_frac'] * SIZE
+        launch_angle = rng.uniform(0, 2 * np.pi)
+        state['source_vx'] = target_speed * np.cos(launch_angle)
+        state['source_vy'] = target_speed * np.sin(launch_angle)
+        state['source_ball_target_speed'] = target_speed
+        state['source_ball_speed_relax'] = SOURCE_BALL_SPEED_RELAX
+        state['source_ball_heading_noise'] = SOURCE_BALL_HEADING_NOISE
+        state['source_ball_restitution'] = SOURCE_BALL_RESTITUTION
+    elif SOURCE_MODE == 'random_walk_wall_avoidance':
+        state['source_vx'] = 0.0
+        state['source_vy'] = 0.0
+        state['source_step'] = params['source_step']
+        state['source_inertia'] = SOURCE_INERTIA
+        state['source_wall_margin'] = SOURCE_WALL_MARGIN
+        state['source_wall_strength'] = SOURCE_WALL_STRENGTH
+    else:
+        raise ValueError(f"unknown SOURCE_MODE: {SOURCE_MODE!r}")
+
+    return state, rng
 
 
 def simulate(state, rng, num_iterations):
@@ -605,12 +728,20 @@ if best['min_neighbor_gap'] < -1e-6 or best['min_wall_gap'] < -1e-6:
     print("parameter to tune around. Investigate before trusting this trial.")
 print("\nTo use these: in global-sim-local-sensors.py's SETUP, set BETA_LOW/")
 print("BETA_HIGH to beta_low/beta_high (sorted above), AVOID_K_SCALE to")
-print("avoid_k_scale, AVOID_R_FRAC to avoid_r_frac, SOURCE_STEP =")
-print("source_step * size, and K_SELF_SCALE to k_self_scale. Also make sure")
-print("EXPONENTIAL_REPULSION is False there and N matches this search's N")
-print(f"({N}) - this search assumes the linear force law throughout, same as")
-print(f"here, and swarm density (N) affects the interaction dynamics being")
-print(f"tuned for. Then run a full-length confirmation before trusting the")
+print("avoid_k_scale, AVOID_R_FRAC to 0.25 (fixed here, not searched - see")
+print("build_state), K_SELF_SCALE to k_self_scale, and LOOM_TAU to loom_tau.")
+if SOURCE_MODE == 'ball':
+    print("SOURCE_MODE there must be 'ball' to match, with SOURCE_BALL_SPEED =")
+    print("source_ball_speed_frac * size (SOURCE_BALL_SPEED_RELAX/")
+    print("HEADING_NOISE/RESTITUTION fixed at this file's SOURCE_BALL_* values,")
+    print("not searched).")
+elif SOURCE_MODE == 'random_walk_wall_avoidance':
+    print("SOURCE_MODE there must be 'random_walk_wall_avoidance' to match, with")
+    print("SOURCE_STEP = source_step * size.")
+print("Also make sure EXPONENTIAL_REPULSION is False there and N matches this")
+print(f"search's N ({N}) - this search assumes the linear force law throughout,")
+print(f"same as here, and swarm density (N) affects the interaction dynamics")
+print(f"being tuned for. Then run a full-length confirmation before trusting the")
 print(f"result - this search only ran {SEARCH_ITERATIONS} steps per trial to stay fast.")
 
 #%% VISUALIZE: test NMSE vs each searched parameter

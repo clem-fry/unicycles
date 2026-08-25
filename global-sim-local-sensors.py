@@ -417,7 +417,7 @@ def resolve_hard_collisions(x, y, anchor, size, robot_radius, x_s, y_s, walker_m
                     x[i] += overlap * dx / d
                     y[i] += overlap * dy / d
 
-        min_dist = 2.0 * robot_radius
+        min_dist = 5.0 * robot_radius * N/10
         for i in range(N):
             for j in range(i + 1, N):
                 if anchor[i] and anchor[j]:
@@ -572,7 +572,7 @@ def step(state, t, T):
 
 #%% SETUP
 
-N = 10       # number of robots
+N = 20       # number of robots
 size = 1
 T = 70     # period of the global input signal
 
@@ -592,11 +592,11 @@ theta = np.random.uniform(0, 2*np.pi, N)  # cosmetic initial facing only -
 # search runs with K_self/home_spring disabled entirely (not just scaled to
 # 0), so K_SELF_SCALE stays 0 here too for a fair comparison - see that
 # file's module docstring.
-K_SELF_SCALE = 0 #4.842140376051767
+K_SELF_SCALE = 0.5 #4.842140376051767
 
 K_self = (7.8788 + np.random.uniform(size=N) * 5.0) * 0.3 * K_SELF_SCALE
 
-BETA_LOW = 8.661317527979818
+BETA_LOW = 19 #8.661317527979818
 BETA_HIGH = 14.938739283334057
 BETA = np.random.uniform(BETA_LOW, BETA_HIGH, size=N)
 M = 1.0  # DotNode overrides M to 1 regardless of launch params
@@ -611,7 +611,7 @@ M = 1.0  # DotNode overrides M to 1 regardless of launch params
 # independent: it's not collision avoidance, it's the real DotNode's own
 # dead-reckoning drift correction back to its start position.
 AVOID_K_SCALE = 0.105 #0.8624863785153422
-AVOID_R_FRAC = 0.19363465925641732
+AVOID_R_FRAC = 0.5
 AVOID_K = 6.0 * AVOID_K_SCALE
 AVOID_R = AVOID_R_FRAC * size
 
@@ -623,7 +623,7 @@ AVOID_R = AVOID_R_FRAC * size
 # sustained velocity. Untuned first guess (not yet part of
 # param_optimisation_local_sensors.py's search) - if this doesn't produce
 # a visible effect, that's the first knob to check.
-LOOM_TAU = 0.0
+LOOM_TAU = 0.5
 
 # force-law switch, applied identically to proximity_repulsion (robots and
 # the walker) and wall_repulsion (see both docstrings): False = linear/
@@ -894,6 +894,7 @@ display(HTML(ani.to_jshtml()))
 
 #%%
 plots.source_path(source_data[0], source_data[1], size=size)
+
 
 #%%
 filename = 'node-simulation.npz'
